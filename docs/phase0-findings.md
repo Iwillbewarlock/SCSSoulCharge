@@ -134,3 +134,9 @@
 | T-ORD | 키워드 부여가 SCS 지팡이 목록 작성보다 먼저인지 | 자동(시작 시) | PASS/FAIL |
 
 사용자 공격이 필요한 항목은 한 번의 테스트 세션에 몰아서 한다.
+
+## 2단계 ESP 메모 (2026-11-06)
+
+- `tools/build_esp.py`가 `build/SCSSoulCharge.esp`를 만든다(ESL, 마스터 Skyrim.esm, 풀 SPEL 1024개 01000800~01000BFF, 시험용 지팡이 WEAP 01000C00).
+- 확인됨: 되읽기에서 SPEL 1024개 모두 cost 0·수동 비용 플래그, 시험용 지팡이는 이름(EDID·FULL)과 DESC 말고는 Skyrim.esm StaffFireball과 바이트가 같고 SCS 키워드가 없다. GPT 리뷰(헤더, HEDR 1.70/1027/0xC01, ESL 범위, SPIT 배치, EitherHand, 레코드 검색) 결함 0건.
+- 가설: 효과가 없는 SPEL이 세 런타임에서 문제없이 로드된다(xEdit 정의상 Effects는 필수로 표시됨, GPT 지적). 자가 테스트 T-ESP: DLL이 kDataLoaded에 풀 SPEL 1024개를 모두 찾고 각 effects 수가 0인지 로그, 게임이 메인 메뉴까지 뜨면 PASS. 실패하면 풀 SPEL마다 무해한 바닐라 효과 하나를 넣고 DLL이 런타임에 교체한다.

@@ -32,9 +32,13 @@ StaffCasting(D:\DEV\StaffCasting)과는 함께 쓰지 않는다(장착 처리·�
 
 ## 설계
 1. 키워드: 로드 오더의 지팡이(SCS 지팡이 제외)에 키워드 두 개(0x803 + Basic 단계 하나)를 붙인다. base EITM은 건드리지 않는다(NPC 지팡이 보호).
-   - 2단계: 이 모드팩용 ESP 패치(생성기 스크립트가 승자 레코드 기준으로 만듦). 빠르게 시험하기 위한 길(가정: 처음 시험은 이 모드팩에서 함).
-   - 배포용: 마스터 75개 ESP는 배포할 수 없으므로 런타임 부여(우리 DLL 또는 KID)로 간다. SCS가 kDataLoaded에 지팡이 목록을 한 번만 만들어서(Controller.cpp:69, :112-121) 우리 부여가 먼저 끝나야 한다. 순서는 미확인 → 자가 테스트 T-ORD 결과를 보고 확정.
-   - 생성기가 거를 것: 마법부여 없음, 비용 0 ENCH, 이미 SCS 키워드 있음, Staff 애니메이션인데 다른 무기로 보이는 것(목록 보고), 스크립트 붙은 지팡이(기본 제외, 설정으로 켜기).
+   - 방식: 배포용 DLL 방식(사용자 결정 2026-11-06, 원문 "배포용 DLL 방식"). 애드온 DLL이 kDataLoaded에 모든 WEAP를 훑어 조건에 맞는 지팡이에 `BGSKeywordForm::AddKeyword`(CommonLib BGSKeywordForm.h:29)로 키워드를 붙인다. ESP 키워드 패치·생성기 스크립트는 만들지 않는다(마스터 75개 ESP는 배포 불가).
+   - 순서 조건: SCS는 kDataLoaded에 지팡이 목록을 한 번만 만들고 다시 만들지 않는다(Controller.cpp:69 `if (enabled_) return true;`, :112-121). 우리 부여가 그보다 먼저 끝나야 한다. → 자가 테스트 T-ORD: 우리 DLL이 부여 끝 시각과 붙인 개수를 로그에 남기고, SCS 로그 "SpellCastingStaff ready: N keyword staffs"(Controller.cpp:182)의 N이 27 + 우리 개수인지 비교.
+   - 순서 가설과 대안(모두 미확인):
+     (가) SKSE는 메시지를 리스너 등록 순서대로 보내고, 등록 순서는 DLL을 읽는 순서(폴더 열거, 이름순으로 보임)를 따른다. `SCSSoulCharge.dll`은 `SpellCastingStaff.dll`보다 이름순으로 앞이라 먼저 받을 것이다. 확인 방법: SKSE 소스의 메시지 발송·플러그인 로드 순서 코드 확인 + T-ORD.
+     (나) (가)가 틀리면: kDataLoaded보다 이른 시점에 붙인다. 후보는 kInputLoaded(폼 로드 뒤, kDataLoaded 앞으로 알려짐) 또는 데이터 로드 끝 함수 훅. 확인 방법: SKSE 소스에서 kInputLoaded 발송 위치가 폼 로드 뒤인지 확인.
+     (다) 둘 다 안 되면: 생성기 ESP를 사용자 PC에서 만드는 도구(배포는 도구만)로 되돌린다.
+   - 거를 것: 마법부여 없음, 비용 0 ENCH, 이미 SCS 키워드 있음, Staff 애니메이션인데 다른 무기로 보이는 것(로그로 목록 보고), 스크립트 붙은 지팡이(VMAD 있음, 이 모드팩 7개: 기본 제외, 설정으로 켜기). 제외 목록·포함 목록은 INI로 받는다.
    - Basic 단계(01~05)를 고르는 규칙은 설정으로 둔다(예: EAMT·가치 기준).
 2. 마법부여 교체: 플레이어가 장착하는 지팡이 아이템에만 ExtraEnchantment로 공유 ENCH를 붙인다(최대 충전 = base EAMT). 버리기·거래·동료에게 줄 때 되돌린다. 같은 base의 모든 아이템이 SCS 지팡이로 인식되므로 장착 즉시 변환해야 한다.
 3. 충전 주문: ESP의 빈 SPEL 자리 1024개를 런타임에 채운다(효과·조건 독립 복사, kSpell, 수동 비용(NoAutoCalc) 플래그 + 매지카 비용 0, 시전 시간 = 원래 ENCH ChargeTime, 장착 칸 설정, MGEF는 수정 금지). 플레이어가 실제로 든 ENCH에만 자리를 준다. ENCH↔자리 표는 코세이브에 저장하고, 로드 때 저장된 표를 먼저 적용한 뒤 새 ENCH만 빈자리에 넣는다. 자리가 가득 차면 소지품에 없는 ENCH의 자리를 비워 다시 쓴다.
@@ -58,7 +62,7 @@ StaffCasting(D:\DEV\StaffCasting)과는 함께 쓰지 않는다(장착 처리·�
 C1~C7 정리 완료. 게임을 켜야 아는 항목은 자가 테스트 T-C1~T-C6, T-ORD로 확인한다.
 
 ## 단계
-0 사실 확인(완료) → 2 ESP → 3 키워드 패치 생성기 → 4 DLL → 5 플러그인 안 자가 테스트(PASS/FAIL 로그) → 6 reviewer 에이전트 + GPT 리뷰 → 사용자 인게임 확인(화면·손맛만).
+0 사실 확인(완료) → 2 ESP(풀 SPEL 자리, 시험용 지팡이) → 3 (키워드 생성기는 DLL 방식으로 바뀌어 4단계에 합침) → 4 DLL → 5 플러그인 안 자가 테스트(PASS/FAIL 로그) → 6 reviewer 에이전트 + GPT 리뷰 → 사용자 인게임 확인(화면·손맛만).
 
 ## 참고
 - reference/scs-2.1.1: SCS 2.1.1 소스(MIT, 저작권 Hamkidna). 수정하지 않는다.
