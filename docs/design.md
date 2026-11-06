@@ -32,26 +32,27 @@ StaffCasting(D:\DEV\StaffCasting)과는 함께 쓰지 않는다(장착 처리·�
 
 ## 설계
 1. 키워드: 로드 오더의 지팡이(SCS 지팡이 제외)에 키워드 두 개(0x803 + Basic 단계 하나)를 붙인다. base EITM은 건드리지 않는다(NPC 지팡이 보호).
-   - 방식: 배포용 DLL 방식(사용자 결정 2026-11-06, 원문 "배포용 DLL 방식"). 애드온 DLL이 kDataLoaded에 모든 WEAP를 훑어 조건에 맞는 지팡이에 `BGSKeywordForm::AddKeyword`(CommonLib BGSKeywordForm.h:29)로 키워드를 붙인다. ESP 키워드 패치·생성기 스크립트는 만들지 않는다(마스터 75개 ESP는 배포 불가).
+   - 방식: 배포용 DLL 방식(사용자 결정 2026-11-06, 원문 "배포용 DLL 방식"). 애드온 DLL이 무기 폼 초기화(`TESObjectWEAP::InitItemImpl` 가상표 슬롯 0x13 훅, kDataLoaded보다 앞) 직후 조건에 맞는 지팡이에 `BGSKeywordForm::AddKeyword`(CommonLib BGSKeywordForm.h:29)로 키워드를 붙인다. 준비(두 ESP 로드, 런타임 확인, 필수 훅 설치) 중 하나라도 실패하면 하나도 안 붙인다. ESP 키워드 패치·생성기 스크립트는 만들지 않는다(마스터 75개 ESP는 배포 불가).
    - 순서 조건: SCS는 kDataLoaded에 지팡이 목록을 한 번만 만들고 다시 만들지 않는다(Controller.cpp:69 `if (enabled_) return true;`, :112-121). 우리 부여가 그보다 먼저 끝나야 한다. → 자가 테스트 T-ORD: 우리 DLL이 부여 끝 시각과 붙인 개수를 로그에 남기고, SCS 로그 "SpellCastingStaff ready: N keyword staffs"(Controller.cpp:182)의 N이 27 + 우리 개수인지 비교.
-   - 순서 가설과 대안(모두 미확인):
-     (가) SKSE는 메시지를 리스너 등록 순서대로 보내고, 등록 순서는 DLL을 읽는 순서(폴더 열거, 이름순으로 보임)를 따른다. `SCSSoulCharge.dll`은 `SpellCastingStaff.dll`보다 이름순으로 앞이라 먼저 받을 것이다. 확인 방법: SKSE 소스의 메시지 발송·플러그인 로드 순서 코드 확인 + T-ORD.
-     (나) (가)가 틀리면: kDataLoaded보다 이른 시점에 붙인다. 후보는 kInputLoaded(폼 로드 뒤, kDataLoaded 앞으로 알려짐) 또는 데이터 로드 끝 함수 훅. 확인 방법: SKSE 소스에서 kInputLoaded 발송 위치가 폼 로드 뒤인지 확인.
-     (다) 둘 다 안 되면: 생성기 ESP를 사용자 PC에서 만드는 도구(배포는 도구만)로 되돌린다.
+   - 순서 가설과 대안:
+     (가) 채택: 무기 폼 초기화(InitItemImpl) 훅에서 붙인다. 폼 초기화는 데이터 로드 과정 안에서 끝나고 kDataLoaded 알림은 그 뒤라서, 어느 DLL이 먼저 알림을 받든 SCS 목록 작성보다 앞선다(가설, T-ORD로 확인).
+     (나) 버림: kDataLoaded에서 DLL 이름순에 기대는 방법. SKSE는 폴더 열거 순서대로 등록하며 이름 정렬 보장이 없다(GPT 검토, skse64 PluginManager.cpp). MO2 가상 폴더에서는 더 불확실하다.
+     (다) 버림: kInputLoaded. 폼 로드 완료 보장이 없다.
+     (라) (가)가 실패하면: 생성기 ESP를 사용자 PC에서 만드는 도구(배포는 도구만)로 되돌린다.
    - 거를 것: 마법부여 없음, 비용 0 ENCH, 이미 SCS 키워드 있음, Staff 애니메이션인데 다른 무기로 보이는 것(로그로 목록 보고), 스크립트 붙은 지팡이(VMAD 있음, 이 모드팩 7개: 기본 제외, 설정으로 켜기). 제외 목록·포함 목록은 INI로 받는다.
    - Basic 단계(01~05)를 고르는 규칙은 설정으로 둔다(예: EAMT·가치 기준).
 2. 마법부여 교체: 플레이어가 장착하는 지팡이 아이템에만 ExtraEnchantment로 공유 ENCH를 붙인다(최대 충전 = base EAMT). 버리기·거래·동료에게 줄 때 되돌린다. 같은 base의 모든 아이템이 SCS 지팡이로 인식되므로 장착 즉시 변환해야 한다.
-3. 충전 주문: ESP의 빈 SPEL 자리 1024개를 런타임에 채운다(효과·조건 독립 복사, kSpell, 수동 비용(NoAutoCalc) 플래그 + 매지카 비용 0, 시전 시간 = 원래 ENCH ChargeTime, 장착 칸 설정, MGEF는 수정 금지). 플레이어가 실제로 든 ENCH에만 자리를 준다. ENCH↔자리 표는 코세이브에 저장하고, 로드 때 저장된 표를 먼저 적용한 뒤 새 ENCH만 빈자리에 넣는다. 자리가 가득 차면 소지품에 없는 ENCH의 자리를 비워 다시 쓴다.
+3. 충전 주문: ESP의 빈 SPEL 자리 1024개를 런타임에 채운다(효과·조건 독립 복사, kSpell, 수동 비용(NoAutoCalc) 플래그 + 매지카 비용 0, 시전 시간 = 원래 ENCH ChargeTime, 장착 칸 설정, MGEF는 수정 금지). 플레이어가 실제로 든 ENCH에만 자리를 준다. ENCH↔자리 표는 코세이브에 저장하고, 로드 때 저장된 표를 먼저 적용한 뒤 새 ENCH만 빈자리에 넣는다. 한 세이브 안에서 자리는 재사용하지 않는다(SCS가 지팡이→SPEL을 자기 코세이브에 기억하므로, Equipment.cpp:57-58). 1024개가 차면 새 변환을 거부하고 알린다. 효과는 원래 ENCH의 `Effect*`를 공유하고, `hostileCount`·`avEffectSetting`도 옮긴다. 코세이브 상태 전이는 docs/plan-phase4.md "GPT 설계 검토 반영" 5번.
 4. 지급: 변환 지팡이를 들면 AddSpell, 내려놓으면 RemoveSpell. 지급 뒤 SCS 재동기화(장비 이벤트)를 보장.
 5. 비용(SCS 수정 없음). 한 지점: `ActorMagicCaster` 가상표 슬롯 0x01 `CastSpellImmediate` 훅(가상표 ID SE 257613 / AE 205828). 플레이어 캐스터 + 풀 SPEL일 때만 처리.
    - F&F·Rapid: 충전 ≥ 비용이면 원래 함수 호출 뒤 비용을 뺀다. 단, TargetLocation 실패(돌아온 뒤 kOther가 `currentSpell == spell && state == 6`, Casting.cpp:521-524)면 빼지 않는다. 충전 부족이면 원래 함수를 부르지 않고 "충전 부족" 알림(효과 없음, SCS 발사 소리는 남음).
-   - 집중형: 시작은 위와 같이 허락하고, 매 프레임 kOther가 그 SPEL을 시전 중이면 비용×dt를 뺀다. 바닥나면 `MagicCaster::InterruptCast`(SE 33630 / AE 34408). 프레임 훅은 SCS와 같은 `Main::Update`(SE 35565 / AE 36564) call 지점에 사슬로 잇는다(FrameHook.cpp:39-63).
-   - 충전을 빼는 곳: 장착 중인 지팡이 손의 충전 액터 값. ExtraCharge를 직접 깎지 않는다.
+   - 집중형: 비용은 초당 값이다. 충전 > 0이면 시작을 허락하고(시작 때 한 번에 빼지 않음), 매 프레임 kOther가 그 SPEL을 시전 중이면 비용×dt를 뺀다(dt가 0.25초를 넘으면 끊음). 바닥나면 `MagicCaster::InterruptCast`(SE 33630 / AE 34408). 프레임 훅은 SCS와 같은 `Main::Update`(SE 35565 / AE 36564) call 지점에 사슬로 잇는다(FrameHook.cpp:39-63).
+   - 충전을 빼는 곳: 장착 중인 지팡이 손의 충전 액터 값, `ModActorValue(kDamage, k(Left|Right)ItemCharge, -양)`. ExtraCharge를 직접 깎지 않는다.
    - 맨손 차단: 풀 SPEL을 실제로 손에 장착하려는 시도를 거부(그대로 유지. 손에 든 주문은 이 훅을 지나지 않음).
    - 비용 = 원래 ENCH의 런타임 계산값(`CalculateMagickaCost`, SE 11213 / AE 11321). 레코드 숫자는 쓰지 않는다(자동 계산 ENCH 211개). player/nullptr 중 어느 인자가 바닐라와 같은지는 T-C4로 정한다.
    - 선택(설정, 기본 꺼짐): 충전이 모자라면 풀 SPEL을 잠시 RemoveSpell해 SCS가 버튼 누를 때 거절하게 한다. 그동안 마법 탭에서 주문이 사라진다.
 6. 직접 마법부여한 지팡이(ExtraEnchantment가 이미 있는 아이템)는 기본 제외.
-7. 밸런스 설정: 풀 SPEL 위력 배율(효과 복사 때 magnitude × 배율). SCS 위력 특기·지팡이 버프와 플레이어 학파 특기가 붙는 것을 보정한다.
+7. 밸런스: 효과를 공유하므로 위력 배율은 이번 범위에서 뺀다(공유 효과를 바꾸면 원래 지팡이도 바뀜). SCS 위력 특기·지팡이 버프, 플레이어 학파 특기가 붙는 정도는 T-C6로 재고, 필요하면 나중에 효과를 따로 복사하는 방식으로 배율을 넣는다.
 8. 이름 지키기(설정, 기본 켜짐, 사용자 요청 2026-11-06): SCS는 고른 주문 이름을 base WEAP 이름에 쓴다(Naming.cpp:7-15, 메뉴 미리보기 InventoryNamePreview.cpp:93-100). SCS는 쓴 이름을 `appliedNames_`에 기억하고 원하는 이름이 바뀔 때만 다시 쓴다(Naming.cpp:11). 그래서 우리가 변환한 지팡이 base의 이름이 kDataLoaded 때 저장한 원래 이름과 다르면 원래 이름으로 되돌린다. 되돌린 뒤에는 SCS가 다음 주문 변경 때까지 다시 쓰지 않는다.
    - 확인 지점: 우리 프레임 훅(일시정지 메뉴 중에도 돌아야 함. SCS 미리보기는 메뉴 중에 돈다 FrameHook.cpp:18-24) + 장비 이벤트. 비교 대상은 변환한 base만이라 비용이 작다.
    - SCS 자체 지팡이 27개는 건드리지 않는다(SCS 고유 기능).
