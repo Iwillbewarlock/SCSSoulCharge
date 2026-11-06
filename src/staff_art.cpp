@@ -94,6 +94,14 @@ namespace scssc::staff_art
 
 	void Install()
 	{
+		// SCS installs its required menu hook at kDataLoaded and refuses to run if the call no longer goes
+		// to the engine (in-game test 2026-11-07: "REQUIRED MENU HOOK FAILED" when we chained first).
+		// So this runs on the first kPostLoadGame/kNewGame, after SCS, and only once.
+		static bool installed = false;
+		if (installed) {
+			return;
+		}
+		installed = true;
 		const REL::Relocation<std::uintptr_t> parent{ REL::RelocationID(37952, 38908) };
 		const auto site = parent.address() + 0xD7;  // the call SCS hooks (SCS MenuEquipHook.cpp:42-43)
 		if (*reinterpret_cast<const std::uint8_t*>(site) != 0xE8) {

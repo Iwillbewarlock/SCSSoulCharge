@@ -9,7 +9,7 @@
 
 namespace scssc::staff_art
 {
-	void Install();  // kDataLoaded, after every plugin installed its load-time hooks
+	void Install();  // first kPostLoadGame/kNewGame: must come after SCS's own menu hook (kDataLoaded)
 	void OnSpellFired(RE::PlayerCharacter* a_player, const RE::SpellItem* a_spell);
 	void OnFrame(RE::PlayerCharacter* a_player);
 }

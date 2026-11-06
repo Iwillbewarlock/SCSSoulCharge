@@ -92,13 +92,14 @@ SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
 					scssc::selftest::RunDataLoaded();
 					scssc::watch::OnDataLoaded();
 					scssc::testcontrols::Install();
-					scssc::staff_art::Install();
 					break;
 				}
 			case SKSE::MessagingInterface::kPostLoadGame:
+				scssc::staff_art::Install();  // after SCS hooked the same menu call at its kDataLoaded
 				scssc::serialization::OnPostLoad(a_msg->data != nullptr);
 				break;
 			case SKSE::MessagingInterface::kNewGame:
+				scssc::staff_art::Install();
 				scssc::serialization::OnNewGame();
 				break;
 			default:
