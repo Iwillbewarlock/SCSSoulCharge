@@ -235,6 +235,45 @@ namespace scssc::casting
 			});
 		}
 
+		// User test 2026-11-07: an empty staff still played the whole charge animation and only the shot was
+		// refused. While the held staff cannot pay for its charge spell, the spell is taken away, so SCS
+		// refuses the attack press itself (ValidSpell needs HasSpell, SCS Charge.cpp:140-142); SCS keeps its
+		// staff -> spell memory (Equipment.cpp:148-149). It comes back as soon as the charge covers it again.
+		std::array<RE::SpellItem*, 2> g_suspended{};  // 0 = left
+
+		void SuspendEmptyChargeSpells(RE::PlayerCharacter* a_player)
+		{
+			if (!Settings::Get().suspendWhenEmpty) {
+				return;
+			}
+			for (const bool left : { true, false }) {
+				auto& suspended = g_suspended[left ? 0 : 1];
+				auto* weapon = a_player->GetEquippedObject(left);
+				auto* own = weapon ? keywords::OriginalEnchantment(weapon->GetFormID()) : nullptr;
+				auto* spell = own ? pool::FindSpell(own) : nullptr;
+				if (suspended && suspended != spell) {
+					suspended = nullptr;  // staff changed: conversion decides about the new one
+				}
+				if (!spell || conversion::IsBlocked()) {
+					continue;
+				}
+				const float charge = ReadCharge(a_player, left);
+				const float cost = ChargeCost(own, a_player);
+				const bool  concentration = spell->GetCastingType() == RE::MagicSystem::CastingType::kConcentration;
+				const bool  affordable = concentration ? core::AllowConcentrationStart(charge, cost) : core::AllowFireAndForget(charge, cost);
+				if (!affordable && !suspended && a_player->HasSpell(spell) && !g_channel.running) {
+					a_player->RemoveSpell(spell);
+					suspended = spell;
+					logger::info("SUSPEND {} charge spell {:08X}: charge {:.2f} < cost {:.2f}", left ? "L" : "R", spell->GetFormID(), charge, cost);
+					RE::SendHUDMessage::ShowHUDMessage("Staff charge too low");
+				} else if (affordable && suspended == spell) {
+					a_player->AddSpell(spell);
+					suspended = nullptr;
+					logger::info("RESUME {} charge spell {:08X}: charge {:.2f} >= cost {:.2f}", left ? "L" : "R", spell->GetFormID(), charge, cost);
+				}
+			}
+		}
+
 		void KeepNames(RE::PlayerCharacter* a_player)
 		{
 			if (!Settings::Get().keepStaffNames) {
@@ -282,6 +321,7 @@ namespace scssc::casting
 			KeepNames(player);  // also while paused: SCS previews names in open menus
 			conversion::GuardBareHands(player);  // equip events alone may miss a path (load, scripts)
 			staff_art::OnFrame(player);
+			SuspendEmptyChargeSpells(player);
 			auto* ui = RE::UI::GetSingleton();
 			if (ui && ui->GameIsPaused()) {
 				return;

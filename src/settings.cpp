@@ -77,6 +77,7 @@ namespace scssc
 			basicTier = 0;
 		}
 		keepStaffNames = ReadBool(L"General", L"bKeepStaffNames", true);
+		suspendWhenEmpty = ReadBool(L"General", L"bSuspendEmptyChargeSpells", true);
 		includeScripted = ReadBool(L"Staves", L"bIncludeScriptedStaves", false);
 		onlyListed = ReadBool(L"Staves", L"bOnlyListedStaves", true);
 		includeSpecs = ReadList(L"Staves", L"sInclude");
