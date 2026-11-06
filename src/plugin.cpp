@@ -2,6 +2,7 @@
 
 #include "casting.h"
 #include "conversion.h"
+#include "enchant_lookup.h"
 #include "keywords.h"
 #include "pool.h"
 #include "serialization.h"
@@ -62,7 +63,7 @@ SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
 	scssc::Settings::Get().Load();
 	// Cast billing and the frame work must be in place before any staff is turned into an SCS catalyst;
 	// otherwise converted staves would cast for free.
-	if (!scssc::casting::InstallCastHook() || !scssc::casting::InstallFrameHook()) {
+	if (!scssc::casting::InstallCastHook() || !scssc::casting::InstallFrameHook() || !scssc::enchant_lookup::Install()) {
 		logger::critical("Cast or frame hook not installed; no staff is converted");
 		return true;
 	}

@@ -37,8 +37,17 @@ add_library(${PROJECT_NAME} SHARED
     src/casting.cpp
     src/watch.cpp
     src/testcontrols.cpp
+    src/enchant_lookup.cpp
+    src/detour_helper.cpp
 )
 target_include_directories(${PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_compile_features(${PROJECT_NAME} PRIVATE cxx_std_23)
 target_precompile_headers(${PROJECT_NAME} PRIVATE src/PCH.h)
 target_link_libraries(${PROJECT_NAME} PRIVATE CommonLibSSE scssc_core)
+
+# Microsoft Detours (MIT): entry hook on the non-virtual InventoryEntryData::GetEnchantment.
+find_path(DETOURS_INCLUDE_DIRS "detours/detours.h" REQUIRED)
+find_library(DETOURS_LIBRARY detours REQUIRED)
+target_include_directories(${PROJECT_NAME} PRIVATE ${DETOURS_INCLUDE_DIRS})
+target_link_libraries(${PROJECT_NAME} PRIVATE ${DETOURS_LIBRARY})
+set_source_files_properties(src/detour_helper.cpp PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
