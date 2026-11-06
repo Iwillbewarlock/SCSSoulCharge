@@ -20,4 +20,6 @@ namespace scssc::keywords
 
 	[[nodiscard]] const Stats& GetStats();
 	[[nodiscard]] bool         IsConverted(RE::FormID a_weapon);
+	// HasVMAD() as seen when the staff was initialised; empty if that staff never reached the filter.
+	[[nodiscard]] std::optional<bool> ScriptFlagAtInit(RE::FormID a_weapon);
 }

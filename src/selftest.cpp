@@ -38,13 +38,20 @@ namespace scssc::selftest
 				}
 			}
 			const auto filter = ResolveFilterSettings(Settings::Get());
+			// Listed staves the filter should convert (exclude wins over include, staff_filter.cpp).
+			std::uint32_t listedExpected = 0;
 			std::uint32_t listedMissing = 0;
 			for (const auto id : filter.include) {
+				if (filter.exclude.contains(id)) {
+					continue;
+				}
+				++listedExpected;
 				if (!keywords::IsConverted(id)) {
 					++listedMissing;
 				}
 			}
-			const bool pass = stats.ready && stats.skippedBeforeReady.empty() && stats.converted > 0 && listedMissing == 0 &&
+			const bool somethingExpected = !filter.onlyListed || listedExpected > 0;
+			const bool pass = stats.ready && stats.skippedBeforeReady.empty() && (!somethingExpected || stats.converted > 0) && listedMissing == 0 &&
 			                  withKeyword == kScsOwnStaves + stats.converted + static_cast<std::uint32_t>(std::ranges::count(foreign, ' '));
 			Report("T-ORD", pass,
 				std::format("staves={} converted={} skipped={} skippedBeforeReady={} listedNotConverted={} weaponsWithScsKeyword={} "
@@ -63,11 +70,14 @@ namespace scssc::selftest
 				Report("T-VMAD", false, std::format("reference staves missing (Sheogorath={} Firebolts={}); not judged", scripted != nullptr, plain != nullptr));
 				return;
 			}
-			const bool scriptedHas = scripted->HasVMAD();
-			const bool plainHas = plain->HasVMAD();
-			Report("T-VMAD", scriptedHas && !plainHas,
-				std::format("at kDataLoaded: StaffOfSheogorath HasVMAD={} (expect 1), StaffOfFirebolts HasVMAD={} (expect 0); InitItem-time values are in the STAFF skip lines",
-					scriptedHas, plainHas));
+			// The filter runs at InitItem time, so that is the value that matters.
+			const auto scriptedInit = keywords::ScriptFlagAtInit(scripted->GetFormID());
+			const auto plainInit = keywords::ScriptFlagAtInit(plain->GetFormID());
+			const bool judged = scriptedInit.has_value() && plainInit.has_value();
+			Report("T-VMAD", judged && *scriptedInit && !*plainInit,
+				std::format("at InitItem: StaffOfSheogorath={} (expect 1) StaffOfFirebolts={} (expect 0); at kDataLoaded: {} / {}{}",
+					scriptedInit ? (*scriptedInit ? "1" : "0") : "not seen", plainInit ? (*plainInit ? "1" : "0") : "not seen",
+					scripted->HasVMAD(), plain->HasVMAD(), judged ? "" : " (InitItem value missing: not judged)"));
 		}
 
 		void CheckEsp()

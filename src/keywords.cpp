@@ -6,6 +6,7 @@
 #include "pool.h"
 #include "settings.h"
 
+#include <unordered_map>
 #include <unordered_set>
 
 namespace scssc::keywords
@@ -29,6 +30,7 @@ namespace scssc::keywords
 			RE::BGSKeyword*                tierKeyword{ nullptr };
 			core::StaffFilterSettings      filter;
 			std::unordered_set<RE::FormID> converted;
+			std::unordered_map<RE::FormID, bool> scriptAtInit;
 			Stats                          stats;
 		};
 
@@ -106,6 +108,7 @@ namespace scssc::keywords
 			if (facts.hasScript) {
 				++state.stats.scriptedSeen;
 			}
+			state.scriptAtInit[facts.formID] = facts.hasScript;
 			const auto verdict = core::ClassifyStaff(facts, state.filter);
 			if (verdict != core::StaffVerdict::kEligible) {
 				++state.stats.skipped;
@@ -146,5 +149,12 @@ namespace scssc::keywords
 	bool IsConverted(RE::FormID a_weapon)
 	{
 		return GetState().converted.contains(a_weapon);
+	}
+
+	std::optional<bool> ScriptFlagAtInit(RE::FormID a_weapon)
+	{
+		const auto& map = GetState().scriptAtInit;
+		const auto  it = map.find(a_weapon);
+		return it == map.end() ? std::nullopt : std::optional<bool>(it->second);
 	}
 }

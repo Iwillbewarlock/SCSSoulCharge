@@ -191,7 +191,19 @@ namespace scssc::conversion
 				}
 				const auto baseID = a_event->baseObject;
 				const bool equipped = a_event->equipped;
-				// The hand state may not be final inside the event (SCS also defers, Events.cpp:19-20).
+				// Learn the charge spell now, inside the event: SCS only queues its Sync here (Events.cpp:19-20)
+				// and runs it on a later frame, so the spell is known when SCS restores the staff's binding.
+				// Attaching the enchantment waits for the task below, when the hand state is final; that task
+				// also forgets the spell again if no hand ends up holding the staff.
+				if (equipped && !g_blocked) {
+					auto* weapon = RE::TESForm::LookupByID<RE::TESObjectWEAP>(baseID);
+					auto* player = RE::PlayerCharacter::GetSingleton();
+					if (player && IsConvertibleStaff(weapon)) {
+						if (auto* spell = pool::SpellFor(weapon->formEnchanting); spell && !player->HasSpell(spell)) {
+							player->AddSpell(spell);
+						}
+					}
+				}
 				if (auto* tasks = SKSE::GetTaskInterface()) {
 					tasks->AddTask([baseID, equipped] { HandleEquip(baseID, equipped); });
 				}
