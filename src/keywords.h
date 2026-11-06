@@ -22,4 +22,6 @@ namespace scssc::keywords
 	[[nodiscard]] bool         IsConverted(RE::FormID a_weapon);
 	// HasVMAD() as seen when the staff was initialised; empty if that staff never reached the filter.
 	[[nodiscard]] std::optional<bool> ScriptFlagAtInit(RE::FormID a_weapon);
+	// The name the staff had before SCS could rename it (converted staves only).
+	[[nodiscard]] const std::string* OriginalName(RE::FormID a_weapon);
 }

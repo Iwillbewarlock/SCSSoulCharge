@@ -153,11 +153,36 @@ namespace scssc::conversion
 			return reverted;
 		}
 
+		// A charge spell put straight into a hand (no staff there to intercept it, SCS Equipment.cpp:38-42)
+		// would cast for free through the normal hand pipeline, which never reaches our cast hook.
+		void GuardBareHands(RE::PlayerCharacter* a_player, RE::FormID a_spellID)
+		{
+			auto* spell = RE::TESForm::LookupByID<RE::SpellItem>(a_spellID);
+			if (!pool::IsPoolSpell(spell)) {
+				return;
+			}
+			for (const bool left : { true, false }) {
+				if (a_player->GetEquippedObject(left) == spell) {
+					a_player->DeselectSpell(spell);
+					const bool removed = a_player->GetEquippedObject(left) != spell;
+					logger::info("BARE {} charge spell {:08X} unequipped from hand: {}", left ? "L" : "R", a_spellID, removed);
+					selftest::Report("T-BARE", removed, std::format("hand={} spell={:08X} stillEquipped={}", left ? "L" : "R", a_spellID, !removed));
+					RE::SendHUDMessage::ShowHUDMessage("Charge spells can only be cast through their staff");
+				}
+			}
+		}
+
 		void HandleEquip(RE::FormID a_baseID, bool a_equipped)
 		{
 			auto* player = RE::PlayerCharacter::GetSingleton();
+			if (!player || !g_settled) {
+				return;
+			}
+			if (a_equipped) {
+				GuardBareHands(player, a_baseID);
+			}
 			auto* weapon = RE::TESForm::LookupByID<RE::TESObjectWEAP>(a_baseID);
-			if (!player || !weapon || !g_settled) {
+			if (!weapon) {
 				return;
 			}
 			if (a_equipped && IsConvertibleStaff(weapon)) {
@@ -263,6 +288,16 @@ namespace scssc::conversion
 	bool IsBlocked() { return g_blocked; }
 
 	void SetSettled(bool a_settled) { g_settled = a_settled; }
+
+	std::optional<bool> HandForSpell(RE::PlayerCharacter* a_player, const RE::SpellItem* a_spell)
+	{
+		for (const bool left : { true, false }) {
+			if (a_spell && SpellBackedByHand(a_player, left) == a_spell) {
+				return left;
+			}
+		}
+		return std::nullopt;
+	}
 
 	void ReconcilePlayer()
 	{

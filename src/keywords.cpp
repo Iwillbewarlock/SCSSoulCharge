@@ -31,6 +31,7 @@ namespace scssc::keywords
 			core::StaffFilterSettings      filter;
 			std::unordered_set<RE::FormID> converted;
 			std::unordered_map<RE::FormID, bool> scriptAtInit;
+			std::unordered_map<RE::FormID, std::string> originalNames;
 			Stats                          stats;
 		};
 
@@ -120,6 +121,7 @@ namespace scssc::keywords
 			a_weapon->AddKeyword(state.staffKeyword);
 			a_weapon->AddKeyword(state.tierKeyword);
 			state.converted.insert(facts.formID);
+			state.originalNames.emplace(facts.formID, a_weapon->GetName());
 			++state.stats.converted;
 			state.stats.lastAddMs = std::chrono::duration_cast<std::chrono::milliseconds>(
 				std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -156,5 +158,12 @@ namespace scssc::keywords
 		const auto& map = GetState().scriptAtInit;
 		const auto  it = map.find(a_weapon);
 		return it == map.end() ? std::nullopt : std::optional<bool>(it->second);
+	}
+
+	const std::string* OriginalName(RE::FormID a_weapon)
+	{
+		const auto& map = GetState().originalNames;
+		const auto  it = map.find(a_weapon);
+		return it == map.end() ? nullptr : &it->second;
 	}
 }

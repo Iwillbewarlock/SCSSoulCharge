@@ -17,4 +17,7 @@ namespace scssc::conversion
 	// Events are ignored until the save is settled (Revert -> false, kPostLoadGame/kNewGame -> true).
 	void SetSettled(bool a_settled);
 	void ReconcilePlayer();  // after load or new game: items and spells match what the player holds
+
+	// The hand (true = left) whose held converted staff backs this charge spell.
+	[[nodiscard]] std::optional<bool> HandForSpell(RE::PlayerCharacter* a_player, const RE::SpellItem* a_spell);
 }
