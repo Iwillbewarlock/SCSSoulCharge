@@ -221,6 +221,42 @@ namespace scssc::conversion
 			ReleaseUnbackedSpells(player);
 		}
 
+		constexpr float kDropSearchRadius = 512.0f;
+
+		void RevertLeftItems(RE::FormID a_baseID, RE::FormID a_newContainer, std::int32_t a_count, RE::ObjectRefHandle a_handle)
+		{
+			const auto* weapon = RE::TESForm::LookupByID<RE::TESObjectWEAP>(a_baseID);
+			const auto* shared = pool::SharedEnchantment();
+			auto*       player = RE::PlayerCharacter::GetSingleton();
+			if (!weapon || !shared || !player) {
+				return;
+			}
+			std::uint32_t reverted = 0;
+			if (auto dropped = a_handle.get()) {
+				reverted += RevertList(weapon, &dropped->extraList, shared);
+			}
+			if (a_newContainer) {
+				reverted += RevertInInventory(RE::TESForm::LookupByID<RE::TESObjectREFR>(a_newContainer), weapon, shared, false);
+			} else if (reverted == 0) {
+				// Dropped into the world without a usable handle: look for our converted copies of this base near the player.
+				if (auto* cell = player->GetParentCell()) {
+					cell->ForEachReferenceInRange(player->GetPosition(), kDropSearchRadius, [&](RE::TESObjectREFR* a_ref) {
+						if (a_ref && a_ref->GetBaseObject() == weapon) {
+							reverted += RevertList(weapon, &a_ref->extraList, shared);
+						}
+						return RE::BSContainer::ForEachResult::kContinue;
+					});
+				}
+			}
+			logger::info("LEAVE {:08X} -> {:08X} x{}: {} item(s) got their own enchantment back", a_baseID, a_newContainer, a_count, reverted);
+			const auto detail = std::format("base={:08X} newContainer={:08X} count={} reverted={}", a_baseID, a_newContainer, a_count, reverted);
+			if (reverted > 0) {
+				selftest::Report("T-REV", true, detail);
+			} else {
+				selftest::Skip("T-REV", detail + " (the item may never have been converted; check it with ObjectReference.GetEnchantment)");
+			}
+		}
+
 		class Sink :
 			public RE::BSTEventSink<RE::TESEquipEvent>,
 			public RE::BSTEventSink<RE::TESContainerChangedEvent>
@@ -266,16 +302,14 @@ namespace scssc::conversion
 				if (!weapon || !shared || weapon->formEnchanting == shared) {
 					return RE::BSEventNotifyControl::kContinue;
 				}
-				std::uint32_t reverted = 0;
-				if (auto dropped = a_event->reference.get()) {
-					reverted += RevertList(weapon, &dropped->extraList, shared);
-				}
-				if (a_event->newContainer) {
-					reverted += RevertInInventory(RE::TESForm::LookupByID<RE::TESObjectREFR>(a_event->newContainer), weapon, shared, false);
-				}
-				if (reverted) {
-					logger::info("LEAVE {:08X} -> {:08X} x{}: {} item(s) got their own enchantment back", a_event->baseObj,
-						a_event->newContainer, a_event->itemCount, reverted);
+				// In-game test (case 281): a dropped staff kept the shared ENCH when handled inside the event,
+				// so the item is looked up one task later, when the move has finished.
+				const auto baseID = a_event->baseObj;
+				const auto newContainer = a_event->newContainer;
+				const auto count = a_event->itemCount;
+				const auto handle = a_event->reference;
+				if (auto* tasks = SKSE::GetTaskInterface()) {
+					tasks->AddTask([baseID, newContainer, count, handle] { RevertLeftItems(baseID, newContainer, count, handle); });
 				}
 				return RE::BSEventNotifyControl::kContinue;
 			}
