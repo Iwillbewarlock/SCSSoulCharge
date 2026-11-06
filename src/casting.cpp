@@ -8,6 +8,7 @@
 #include "pool.h"
 #include "selftest.h"
 #include "settings.h"
+#include "watch.h"
 
 #include <chrono>
 
@@ -45,12 +46,17 @@ namespace scssc::casting
 			return values ? values->GetActorValue(ChargeValue(a_left)) : std::numeric_limits<float>::quiet_NaN();
 		}
 
+		std::array<float, 2> g_billed{};  // running total per hand (0 = left), read by the self-test watch
+
+		// Positive = take charge, negative = give it back (refund of a rejected rune/summon).
 		void Debit(RE::PlayerCharacter* a_player, bool a_left, float a_amount)
 		{
-			if (a_amount > 0.0f) {
-				if (auto* values = a_player->AsActorValueOwner()) {
-					values->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage, ChargeValue(a_left), -a_amount);
-				}
+			if (a_amount == 0.0f || !std::isfinite(a_amount)) {
+				return;
+			}
+			if (auto* values = a_player->AsActorValueOwner()) {
+				values->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage, ChargeValue(a_left), -a_amount);
+				g_billed[a_left ? 0 : 1] += a_amount;
 			}
 		}
 
@@ -274,6 +280,7 @@ namespace scssc::casting
 				return;
 			}
 			UpdateChannel(player, FrameDelta());
+			watch::OnFrame(player);
 		}
 
 		std::size_t FrameCallOffset()
@@ -315,5 +322,10 @@ namespace scssc::casting
 		g_originalFrame = trampoline.write_call<5>(site, FrameThunk);
 		logger::info("Hook installed: Main::Update frame call (+0x{:X})", FrameCallOffset());
 		return true;
+	}
+
+	float TotalBilled(bool a_left)
+	{
+		return g_billed[a_left ? 0 : 1];
 	}
 }

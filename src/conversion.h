@@ -24,6 +24,9 @@ namespace scssc::conversion
 	// Unequips charge spells found in a bare hand. Called from equip events, after loads and every frame.
 	void GuardBareHands(RE::PlayerCharacter* a_player);
 
+	// The extra list of the item worn in that hand, or nullptr.
+	[[nodiscard]] const RE::ExtraDataList* WornList(RE::PlayerCharacter* a_player, bool a_left);
+
 	// Puts back a converted item's own display name if SCS replaced it. True when something changed.
 	bool RestoreItemName(RE::PlayerCharacter* a_player, bool a_left);
 }

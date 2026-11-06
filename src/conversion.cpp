@@ -5,6 +5,7 @@
 #include "keywords.h"
 #include "pool.h"
 #include "selftest.h"
+#include "watch.h"
 
 #include <unordered_map>
 
@@ -190,6 +191,9 @@ namespace scssc::conversion
 					}
 				}
 			}
+			if (!a_equipped) {
+				watch::OnUnequip(player, weapon);
+			}
 			ReleaseUnbackedSpells(player);
 		}
 
@@ -321,6 +325,13 @@ namespace scssc::conversion
 		}
 		custom->SetName(it->second.c_str());
 		return true;
+	}
+
+	const RE::ExtraDataList* WornList(RE::PlayerCharacter* a_player, bool a_left)
+	{
+		auto* weapon = a_player->GetEquippedObject(a_left);
+		auto* base = weapon ? weapon->As<RE::TESBoundObject>() : nullptr;
+		return base ? FindWorn(a_player, base, a_left).list : nullptr;
 	}
 
 	std::optional<bool> HandForSpell(RE::PlayerCharacter* a_player, const RE::SpellItem* a_spell)
