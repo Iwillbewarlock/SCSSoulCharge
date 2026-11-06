@@ -3,6 +3,7 @@
 #include "testcontrols.h"
 
 #include "conversion.h"
+#include "keywords.h"
 #include "pool.h"
 #include "settings.h"
 
@@ -78,7 +79,7 @@ namespace scssc::testcontrols
 			auto* player = RE::PlayerCharacter::GetSingleton();
 			auto* weapon = player ? player->GetEquippedObject(a_left) : nullptr;
 			auto* staff = weapon ? weapon->As<RE::TESObjectWEAP>() : nullptr;
-			auto* spell = staff ? pool::FindSpell(staff->formEnchanting) : nullptr;
+			auto* spell = staff ? pool::FindSpell(keywords::OriginalEnchantment(staff->GetFormID())) : nullptr;
 			auto* data = RE::TESDataHandler::GetSingleton();
 			auto* slot = data ? data->LookupForm<RE::BGSEquipSlot>(a_left ? kLeftHandSlot : kRightHandSlot, "Skyrim.esm") : nullptr;
 			const auto target = ScsMenuEquipTarget();

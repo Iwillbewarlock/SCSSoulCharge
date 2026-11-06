@@ -32,6 +32,7 @@ namespace scssc::keywords
 			std::unordered_set<RE::FormID> converted;
 			std::unordered_map<RE::FormID, bool> scriptAtInit;
 			std::unordered_map<RE::FormID, std::string> originalNames;
+			std::unordered_map<RE::FormID, RE::EnchantmentItem*> originalEnchantments;
 			Stats                          stats;
 		};
 
@@ -122,6 +123,7 @@ namespace scssc::keywords
 			a_weapon->AddKeyword(state.tierKeyword);
 			state.converted.insert(facts.formID);
 			state.originalNames.emplace(facts.formID, a_weapon->GetName());
+			state.originalEnchantments.emplace(facts.formID, a_weapon->formEnchanting);
 			++state.stats.converted;
 			state.stats.lastAddMs = std::chrono::duration_cast<std::chrono::milliseconds>(
 				std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -165,5 +167,12 @@ namespace scssc::keywords
 		const auto& map = GetState().originalNames;
 		const auto  it = map.find(a_weapon);
 		return it == map.end() ? nullptr : &it->second;
+	}
+
+	RE::EnchantmentItem* OriginalEnchantment(RE::FormID a_weapon)
+	{
+		const auto& map = GetState().originalEnchantments;
+		const auto  it = map.find(a_weapon);
+		return it == map.end() ? nullptr : it->second;
 	}
 }

@@ -24,4 +24,6 @@ namespace scssc::keywords
 	[[nodiscard]] std::optional<bool> ScriptFlagAtInit(RE::FormID a_weapon);
 	// The name the staff had before SCS could rename it (converted staves only).
 	[[nodiscard]] const std::string* OriginalName(RE::FormID a_weapon);
+	// The staff record's own enchantment as loaded (the record may temporarily carry SCS's while held).
+	[[nodiscard]] RE::EnchantmentItem* OriginalEnchantment(RE::FormID a_weapon);
 }

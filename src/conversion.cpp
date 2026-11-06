@@ -8,6 +8,7 @@
 #include "watch.h"
 
 #include <unordered_map>
+#include <unordered_set>
 
 namespace scssc::conversion
 {
@@ -31,11 +32,60 @@ namespace scssc::conversion
 		// staves (those carry the shared ENCH on the base record). Independent of this run's INI.
 		bool IsOurConversion(const RE::TESObjectWEAP* a_base, const RE::ExtraDataList* a_list, const RE::EnchantmentItem* a_shared)
 		{
-			if (!a_base || !a_list || !a_shared || a_base->formEnchanting == a_shared) {
+			if (!a_base || !a_list || !a_shared || (a_base->formEnchanting == a_shared && !keywords::IsConverted(a_base->GetFormID()))) {
 				return false;
 			}
 			const auto* extra = a_list->GetByType<RE::ExtraEnchantment>();
 			return extra && extra->enchantment == a_shared;
+		}
+
+		// The staff's own enchantment, never SCS's shared one even while the record is swapped.
+		RE::EnchantmentItem* OwnEnchantment(const RE::TESObjectWEAP* a_weapon)
+		{
+			if (!a_weapon) {
+				return nullptr;
+			}
+			auto* original = keywords::OriginalEnchantment(a_weapon->GetFormID());
+			return original ? original : a_weapon->formEnchanting;
+		}
+
+		// In-game test (2026-11-06): the hand casts the enchantment on the staff RECORD, ignoring the item's
+		// ExtraEnchantment and the GetEnchantment lookup. So while the player holds a converted staff, its
+		// record points at SCS's shared enchantment; it goes back as soon as no hand holds that staff.
+		// Side effect for that time: NPCs using the same staff type cast the empty shared enchantment.
+		std::unordered_set<RE::TESObjectWEAP*> g_swapped;
+
+		void SwapRecord(RE::TESObjectWEAP* a_weapon, RE::EnchantmentItem* a_shared)
+		{
+			if (a_weapon && a_shared && a_weapon->formEnchanting != a_shared) {
+				a_weapon->formEnchanting = a_shared;
+				g_swapped.insert(a_weapon);
+				logger::info("SWAP {:08X}: record enchantment -> shared while held", a_weapon->GetFormID());
+			}
+		}
+
+		void RestoreRecord(RE::TESObjectWEAP* a_weapon)
+		{
+			if (auto* original = keywords::OriginalEnchantment(a_weapon->GetFormID())) {
+				a_weapon->formEnchanting = original;
+			}
+			logger::info("SWAP {:08X}: record enchantment restored", a_weapon->GetFormID());
+		}
+
+		// Puts back every swapped record no hand holds (or all of them when a_all).
+		void RestoreRecords(RE::PlayerCharacter* a_player, bool a_all)
+		{
+			for (auto it = g_swapped.begin(); it != g_swapped.end();) {
+				auto* weapon = *it;
+				const bool held = !a_all && a_player &&
+				                  (a_player->GetEquippedObject(true) == weapon || a_player->GetEquippedObject(false) == weapon);
+				if (held) {
+					++it;
+					continue;
+				}
+				RestoreRecord(weapon);
+				it = g_swapped.erase(it);
+			}
 		}
 
 		struct WornItem
@@ -96,13 +146,13 @@ namespace scssc::conversion
 				return nullptr;
 			}
 			const auto worn = FindWorn(a_player, base, a_left);
-			return IsOurConversion(base, worn.list, pool::SharedEnchantment()) ? pool::FindSpell(base->formEnchanting) : nullptr;
+			return IsOurConversion(base, worn.list, pool::SharedEnchantment()) ? pool::FindSpell(OwnEnchantment(base)) : nullptr;
 		}
 
 		void ConvertWorn(RE::PlayerCharacter* a_player, RE::TESObjectWEAP* a_weapon, bool a_left)
 		{
 			auto*      shared = pool::SharedEnchantment();
-			auto*      own = a_weapon->formEnchanting;
+			auto*      own = OwnEnchantment(a_weapon);
 			const auto worn = FindWorn(a_player, a_weapon, a_left);
 			if (!shared || !own || !worn.list) {
 				logger::warn("CONVERT {} {:08X}: worn item not found", a_left ? "L" : "R", a_weapon->GetFormID());
@@ -128,6 +178,7 @@ namespace scssc::conversion
 				logger::info("CONVERT {} {:08X} '{}': shared ENCH attached, maxCharge={}", a_left ? "L" : "R",
 					a_weapon->GetFormID(), a_weapon->GetName(), a_weapon->amountofEnchantment);
 			}
+			SwapRecord(a_weapon, shared);
 			if (!a_player->HasSpell(spell)) {
 				a_player->AddSpell(spell);
 			}
@@ -143,6 +194,7 @@ namespace scssc::conversion
 		// Forget every charge spell no hand backs right now (covers spells of vanished enchantments too).
 		void ReleaseUnbackedSpells(RE::PlayerCharacter* a_player)
 		{
+			RestoreRecords(a_player, false);
 			const auto* left = SpellBackedByHand(a_player, true);
 			const auto* right = SpellBackedByHand(a_player, false);
 			for (auto* spell : pool::Spells()) {
@@ -278,7 +330,8 @@ namespace scssc::conversion
 					auto* weapon = RE::TESForm::LookupByID<RE::TESObjectWEAP>(baseID);
 					auto* player = RE::PlayerCharacter::GetSingleton();
 					if (player && IsConvertibleStaff(weapon)) {
-						if (auto* spell = pool::SpellFor(weapon->formEnchanting); spell && !player->HasSpell(spell)) {
+						SwapRecord(weapon, pool::SharedEnchantment());
+						if (auto* spell = pool::SpellFor(OwnEnchantment(weapon)); spell && !player->HasSpell(spell)) {
 							player->AddSpell(spell);
 						}
 					}
@@ -299,7 +352,7 @@ namespace scssc::conversion
 				}
 				const auto* weapon = RE::TESForm::LookupByID<RE::TESObjectWEAP>(a_event->baseObj);
 				const auto* shared = pool::SharedEnchantment();
-				if (!weapon || !shared || weapon->formEnchanting == shared) {
+				if (!weapon || !shared || (weapon->formEnchanting == shared && !keywords::IsConverted(weapon->GetFormID()))) {
 					return RE::BSEventNotifyControl::kContinue;
 				}
 				// In-game test (case 281): a dropped staff kept the shared ENCH when handled inside the event,
@@ -344,6 +397,9 @@ namespace scssc::conversion
 
 	void SetSettled(bool a_settled)
 	{
+		if (!a_settled) {
+			RestoreRecords(nullptr, true);  // a load starts: no record stays swapped across saves
+		}
 		g_settled = a_settled;
 		++g_inventoryGeneration;  // a load or new game replaces every inventory list
 	}
