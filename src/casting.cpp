@@ -8,6 +8,7 @@
 #include "pool.h"
 #include "selftest.h"
 #include "settings.h"
+#include "staff_art.h"
 #include "testcontrols.h"
 #include "watch.h"
 
@@ -108,6 +109,10 @@ namespace scssc::casting
 		{
 			LogFirstCall(a_caster, a_spell);
 			auto* player = RE::PlayerCharacter::GetSingleton();
+			if (player && a_caster && a_caster->GetCasterAsActor() == player && a_spell && a_spell->Is(RE::FormType::Spell) &&
+				a_caster->GetCastingSource() == RE::MagicSystem::CastingSource::kOther) {
+				staff_art::OnSpellFired(player, static_cast<const RE::SpellItem*>(a_spell));
+			}
 			if (!pool::IsPoolSpell(a_spell) || !player || !a_caster || a_caster->GetCasterAsActor() != player) {
 				g_originalCast(a_caster, a_spell, a_noHitEffectArt, a_target, a_effectiveness, a_hostileOnly, a_magnitudeOverride, a_blame);
 				return;
@@ -276,6 +281,7 @@ namespace scssc::casting
 			}
 			KeepNames(player);  // also while paused: SCS previews names in open menus
 			conversion::GuardBareHands(player);  // equip events alone may miss a path (load, scripts)
+			staff_art::OnFrame(player);
 			auto* ui = RE::UI::GetSingleton();
 			if (ui && ui->GameIsPaused()) {
 				return;

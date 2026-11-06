@@ -8,6 +8,7 @@
 #include "serialization.h"
 #include "selftest.h"
 #include "settings.h"
+#include "staff_art.h"
 #include "testcontrols.h"
 #include "watch.h"
 
@@ -91,6 +92,7 @@ SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
 					scssc::selftest::RunDataLoaded();
 					scssc::watch::OnDataLoaded();
 					scssc::testcontrols::Install();
+					scssc::staff_art::Install();
 					break;
 				}
 			case SKSE::MessagingInterface::kPostLoadGame:

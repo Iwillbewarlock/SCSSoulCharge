@@ -38,6 +38,7 @@ add_library(${PROJECT_NAME} SHARED
     src/watch.cpp
     src/testcontrols.cpp
     src/enchant_lookup.cpp
+    src/staff_art.cpp
     src/detour_helper.cpp
 )
 target_include_directories(${PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
