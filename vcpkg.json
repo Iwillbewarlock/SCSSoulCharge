@@ -1,0 +1,17 @@
+{
+    "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+    "name": "scssoulcharge",
+    "version-string": "0.1.0",
+    "description": "Spellcasting Staff NG add-on: vanilla and mod staves as SCS catalysts, their own enchantment cast from the magic menu using the staff's soul gem charge.",
+    "supports": "windows & x64",
+    "builtin-baseline": "dddca6fa87f177e0678e2545c4b4636a44aa05bd",
+    "dependencies": [
+        "directxmath",
+        "directxtk",
+        "fmt",
+        "nlohmann-json",
+        "rapidcsv",
+        "spdlog",
+        "xbyak"
+    ]
+}
