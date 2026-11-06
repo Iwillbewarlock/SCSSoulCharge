@@ -2,6 +2,7 @@
 
 #include "staff_art.h"
 
+#include "conversion.h"
 #include "keywords.h"
 #include "pool.h"
 
@@ -19,10 +20,13 @@ namespace scssc::staff_art
 
 		struct Original
 		{
-			bool                captured{ false };
-			RE::EffectSetting*  effect{ nullptr };  // SCS's dummy effect on the shared enchantment
-			RE::BGSArtObject*   castingArt{ nullptr };
-			RE::TESObjectLIGH*  light{ nullptr };
+			bool                     captured{ false };
+			RE::EffectSetting*       effect{ nullptr };  // SCS's dummy effect on the shared enchantment
+			RE::BGSArtObject*        castingArt{ nullptr };
+			RE::TESObjectLIGH*       light{ nullptr };
+			RE::BGSArtObject*        enchantArt{ nullptr };
+			RE::TESEffectShader*     enchantShader{ nullptr };
+			RE::BGSReferenceEffect*  enchantVisuals{ nullptr };
 		};
 		Original                g_original;
 		const RE::EffectSetting* g_applied = nullptr;  // effect whose art is currently shown, nullptr = SCS's own
@@ -38,9 +42,9 @@ namespace scssc::staff_art
 				logger::warn("Staff art: SCS shared enchantment has no effect; tip art stays as is");
 				return false;
 			}
-			g_original.effect = shared->effects[0]->baseEffect;
-			g_original.castingArt = g_original.effect->data.castingArt;
-			g_original.light = g_original.effect->data.light;
+			auto* effect = shared->effects[0]->baseEffect;
+			g_original = { true, effect, effect->data.castingArt, effect->data.light, effect->data.enchantEffectArt,
+				effect->data.enchantShader, effect->data.enchantVisuals };
 			return true;
 		}
 
@@ -50,11 +54,62 @@ namespace scssc::staff_art
 			return weapon && keywords::IsConverted(weapon->GetFormID());
 		}
 
+		// The hand caster keeps the casting art it picked when the spell was selected; give it the new one.
+		void RefreshCastingArt(RE::PlayerCharacter* a_player, RE::BGSArtObject* a_art)
+		{
+			for (const bool left : { true, false }) {
+				if (!HoldsConvertedStaff(a_player, left)) {
+					continue;
+				}
+				auto* caster = a_player->GetMagicCaster(left ? RE::MagicSystem::CastingSource::kLeftHand : RE::MagicSystem::CastingSource::kRightHand);
+				if (auto* actorCaster = caster ? static_cast<RE::ActorMagicCaster*>(caster) : nullptr; actorCaster && caster->state.underlying() == 0) {
+					actorCaster->castingArt = a_art;
+				}
+			}
+		}
+
+		// The idle glow (weapon enchantment visuals) is built when the staff is equipped: equip it again so the
+		// engine rebuilds it from the swapped enchantment art. Runs as a task, outside the menu call.
+		void ReequipConvertedStaves()
+		{
+			auto* player = RE::PlayerCharacter::GetSingleton();
+			auto* manager = RE::ActorEquipManager::GetSingleton();
+			auto* data = RE::TESDataHandler::GetSingleton();
+			if (!player || !manager || !data) {
+				return;
+			}
+			for (const bool left : { true, false }) {
+				auto* weapon = player->GetEquippedObject(left);
+				auto* base = weapon ? weapon->As<RE::TESObjectWEAP>() : nullptr;
+				if (!base || !keywords::IsConverted(base->GetFormID())) {
+					continue;
+				}
+				auto* list = const_cast<RE::ExtraDataList*>(conversion::WornList(player, left));
+				auto* slot = data->LookupForm<RE::BGSEquipSlot>(left ? kLeftHandSlot : kRightHandSlot, "Skyrim.esm");
+				if (!list || !slot) {
+					continue;
+				}
+				manager->UnequipObject(player, base, list, 1, slot, false, false, false, true);
+				manager->EquipObject(player, base, list, 1, slot, false, false, false, true);
+				logger::info("STAFF ART {} staff {:08X} re-equipped to rebuild its glow", left ? "L" : "R", base->GetFormID());
+			}
+		}
+
+		void Write(RE::BGSArtObject* a_castingArt, RE::TESObjectLIGH* a_light, RE::BGSArtObject* a_enchantArt,
+			RE::TESEffectShader* a_enchantShader, RE::BGSReferenceEffect* a_enchantVisuals)
+		{
+			auto& data = g_original.effect->data;
+			data.castingArt = a_castingArt;
+			data.light = a_light;
+			data.enchantEffectArt = a_enchantArt;
+			data.enchantShader = a_enchantShader;
+			data.enchantVisuals = a_enchantVisuals;
+		}
+
 		void Restore()
 		{
 			if (g_original.effect && g_applied) {
-				g_original.effect->data.castingArt = g_original.castingArt;
-				g_original.effect->data.light = g_original.light;
+				Write(g_original.castingArt, g_original.light, g_original.enchantArt, g_original.enchantShader, g_original.enchantVisuals);
 				g_applied = nullptr;
 				logger::info("STAFF ART restored to SCS's own");
 			}
@@ -70,11 +125,21 @@ namespace scssc::staff_art
 			if (!source || source == g_applied) {
 				return;
 			}
-			g_original.effect->data.castingArt = source->data.castingArt;
-			g_original.effect->data.light = source->data.light;
+			const auto& from = source->data;
+			// Spell effects rarely carry enchantment visuals; their casting art stands in for the idle glow.
+			auto* idleArt = from.enchantEffectArt ? from.enchantEffectArt : from.castingArt;
+			Write(from.castingArt, from.light, idleArt, from.enchantShader, from.enchantVisuals);
 			g_applied = source;
-			logger::info("STAFF ART <- '{}' {:08X}: castingArt={:08X} light={:08X}", a_spell->GetName(), a_spell->GetFormID(),
-				source->data.castingArt ? source->data.castingArt->GetFormID() : 0u, source->data.light ? source->data.light->GetFormID() : 0u);
+			logger::info("STAFF ART <- '{}' {:08X}: castingArt={:08X} idleArt={:08X} enchantShader={:08X} light={:08X}", a_spell->GetName(),
+				a_spell->GetFormID(), from.castingArt ? from.castingArt->GetFormID() : 0u, idleArt ? idleArt->GetFormID() : 0u,
+				from.enchantShader ? from.enchantShader->GetFormID() : 0u, from.light ? from.light->GetFormID() : 0u);
+			auto* player = RE::PlayerCharacter::GetSingleton();
+			if (player) {
+				RefreshCastingArt(player, from.castingArt);
+			}
+			if (auto* tasks = SKSE::GetTaskInterface()) {
+				tasks->AddTask([] { ReequipConvertedStaves(); });
+			}
 		}
 
 		// Chained after SCS's own interception of the magic menu's spell equip (SCS MenuEquipHook.cpp).
