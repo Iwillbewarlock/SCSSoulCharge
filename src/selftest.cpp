@@ -111,6 +111,13 @@ namespace scssc::selftest
 		}
 	}
 
+	void Skip(std::string_view a_id, std::string_view a_detail)
+	{
+		if (Settings::Get().selfTest) {
+			logger::info("SELFTEST SKIP {} {}", a_id, a_detail);
+		}
+	}
+
 	void RunDataLoaded()
 	{
 		CheckOrder();

@@ -46,7 +46,7 @@ namespace scssc::casting
 			return values ? values->GetActorValue(ChargeValue(a_left)) : std::numeric_limits<float>::quiet_NaN();
 		}
 
-		std::array<float, 2> g_billed{};  // running total per hand (0 = left), read by the self-test watch
+		std::array<double, 2> g_billed{};  // double: a float running total loses cents after long sessions  // running total per hand (0 = left), read by the self-test watch
 
 		// Positive = take charge, negative = give it back (refund of a rejected rune/summon).
 		void Debit(RE::PlayerCharacter* a_player, bool a_left, float a_amount)
@@ -324,7 +324,7 @@ namespace scssc::casting
 		return true;
 	}
 
-	float TotalBilled(bool a_left)
+	double TotalBilled(bool a_left)
 	{
 		return g_billed[a_left ? 0 : 1];
 	}

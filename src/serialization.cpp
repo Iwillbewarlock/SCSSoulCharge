@@ -5,6 +5,7 @@
 #include "conversion.h"
 #include "pool.h"
 #include "selftest.h"
+#include "watch.h"
 
 namespace scssc::serialization
 {
@@ -51,6 +52,7 @@ namespace scssc::serialization
 		void OnRevert(SKSE::SerializationInterface*)
 		{
 			conversion::SetSettled(false);
+			watch::Reset();
 			pool::Clear();
 			g_loadState = LoadState::kNone;
 			g_rawPool.clear();

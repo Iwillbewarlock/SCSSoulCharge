@@ -15,5 +15,5 @@ namespace scssc::casting
 
 	// Charge this plugin took from a hand since the game started (refunds subtracted). Self-tests use it
 	// to tell our billing apart from anything the engine drains.
-	[[nodiscard]] float TotalBilled(bool a_left);
+	[[nodiscard]] double TotalBilled(bool a_left);
 }

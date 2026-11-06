@@ -13,4 +13,5 @@ namespace scssc::watch
 	void OnDataLoaded();
 	void OnFrame(RE::PlayerCharacter* a_player);
 	void OnUnequip(RE::PlayerCharacter* a_player, const RE::TESObjectWEAP* a_base);
+	void Reset();  // co-save Revert: observations of the previous game are void
 }
