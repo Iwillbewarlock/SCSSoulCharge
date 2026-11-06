@@ -1,6 +1,9 @@
 #include "PCH.h"
 
+#include "conversion.h"
 #include "keywords.h"
+#include "pool.h"
+#include "serialization.h"
 #include "selftest.h"
 #include "settings.h"
 
@@ -59,13 +62,33 @@ SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
 		return true;
 	}
 
+	scssc::serialization::Install();
+
 	auto* messaging = SKSE::GetMessagingInterface();
 	if (!messaging || !messaging->RegisterListener([](SKSE::MessagingInterface::Message* a_msg) {
-			if (a_msg && a_msg->type == SKSE::MessagingInterface::kDataLoaded) {
-				const auto& stats = scssc::keywords::GetStats();
-				logger::info("kDataLoaded: staves={} converted={} skipped={} ready={}",
-					stats.staves, stats.converted, stats.skipped, stats.ready);
-				scssc::selftest::RunDataLoaded();
+			if (!a_msg) {
+				return;
+			}
+			switch (a_msg->type) {
+			case SKSE::MessagingInterface::kDataLoaded:
+				{
+					const auto& stats = scssc::keywords::GetStats();
+					logger::info("kDataLoaded: staves={} converted={} skipped={} ready={}",
+						stats.staves, stats.converted, stats.skipped, stats.ready);
+					if (stats.ready && scssc::pool::Resolve()) {
+						scssc::conversion::Install();
+					}
+					scssc::selftest::RunDataLoaded();
+					break;
+				}
+			case SKSE::MessagingInterface::kPostLoadGame:
+				scssc::serialization::OnPostLoad(a_msg->data != nullptr);
+				break;
+			case SKSE::MessagingInterface::kNewGame:
+				scssc::serialization::OnNewGame();
+				break;
+			default:
+				break;
 			}
 		})) {
 		logger::critical("SKSE messaging interface unavailable");

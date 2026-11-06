@@ -31,6 +31,9 @@ add_library(${PROJECT_NAME} SHARED
     src/settings.cpp
     src/keywords.cpp
     src/selftest.cpp
+    src/pool.cpp
+    src/conversion.cpp
+    src/serialization.cpp
 )
 target_include_directories(${PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_compile_features(${PROJECT_NAME} PRIVATE cxx_std_23)
