@@ -36,6 +36,7 @@ add_library(${PROJECT_NAME} SHARED
     src/serialization.cpp
     src/casting.cpp
     src/watch.cpp
+    src/testcontrols.cpp
 )
 target_include_directories(${PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_compile_features(${PROJECT_NAME} PRIVATE cxx_std_23)

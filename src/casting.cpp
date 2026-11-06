@@ -8,6 +8,7 @@
 #include "pool.h"
 #include "selftest.h"
 #include "settings.h"
+#include "testcontrols.h"
 #include "watch.h"
 
 #include <chrono>
@@ -280,6 +281,7 @@ namespace scssc::casting
 				return;
 			}
 			UpdateChannel(player, FrameDelta());
+			testcontrols::OnFrame(FrameDelta());
 			watch::OnFrame(player);
 		}
 

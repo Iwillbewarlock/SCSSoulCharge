@@ -82,6 +82,8 @@ namespace scssc
 		includeSpecs = ReadList(L"Staves", L"sInclude");
 		excludeSpecs = ReadList(L"Staves", L"sExclude");
 		selfTest = ReadBool(L"SelfTest", L"bEnabled", false);
+		testControls = ReadBool(L"SelfTest", L"bTestControls", false);
+		testHoldMs = std::clamp(static_cast<int>(::GetPrivateProfileIntW(L"SelfTest", L"iTestHoldMs", 1500, kIniPath)), 100, 5000);
 		logger::info("Settings: iBasicTier={} bKeepStaffNames={} bIncludeScriptedStaves={} bOnlyListedStaves={} include={} exclude={} selfTest={}",
 			basicTier, keepStaffNames, includeScripted, onlyListed, includeSpecs.size(), excludeSpecs.size(), selfTest);
 	}

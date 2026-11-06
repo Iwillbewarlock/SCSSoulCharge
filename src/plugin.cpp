@@ -7,6 +7,7 @@
 #include "serialization.h"
 #include "selftest.h"
 #include "settings.h"
+#include "testcontrols.h"
 #include "watch.h"
 
 namespace
@@ -88,6 +89,7 @@ SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
 					}
 					scssc::selftest::RunDataLoaded();
 					scssc::watch::OnDataLoaded();
+					scssc::testcontrols::Install();
 					break;
 				}
 			case SKSE::MessagingInterface::kPostLoadGame:
