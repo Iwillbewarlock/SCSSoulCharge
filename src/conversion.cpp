@@ -44,7 +44,20 @@ namespace scssc::conversion
 			RE::ExtraDataList*      list{ nullptr };
 		};
 
-		WornItem FindWorn(RE::PlayerCharacter* a_player, const RE::TESBoundObject* a_base, bool a_left)
+		// Bumped by every equip / container event and by Revert; a cached worn item is valid only
+		// within one generation. Keeps the per-frame callers (names, channel, self-tests) off a full
+		// inventory scan while nothing changed.
+		std::uint64_t g_inventoryGeneration = 0;
+
+		struct WornCache
+		{
+			const RE::TESBoundObject* base{ nullptr };
+			std::uint64_t             generation{ ~0ull };
+			WornItem                  item;
+		};
+		std::array<WornCache, 2> g_wornCache{};  // 0 = left
+
+		WornItem ScanWorn(RE::PlayerCharacter* a_player, const RE::TESBoundObject* a_base, bool a_left)
 		{
 			auto* changes = a_player->GetInventoryChanges();
 			if (!changes || !changes->entryList) {
@@ -62,6 +75,16 @@ namespace scssc::conversion
 				}
 			}
 			return {};
+		}
+
+		WornItem FindWorn(RE::PlayerCharacter* a_player, const RE::TESBoundObject* a_base, bool a_left)
+		{
+			auto& cache = g_wornCache[a_left ? 0 : 1];
+			if (cache.base == a_base && cache.generation == g_inventoryGeneration) {
+				return cache.item;
+			}
+			cache = { a_base, g_inventoryGeneration, ScanWorn(a_player, a_base, a_left) };
+			return cache.item;
 		}
 
 		// The charge spell a hand currently backs: a converted staff in that hand, carrying the shared ENCH.
@@ -164,6 +187,7 @@ namespace scssc::conversion
 
 		void HandleEquip(RE::FormID a_baseID, bool a_equipped)
 		{
+			++g_inventoryGeneration;  // the equip transaction finished since the event
 			auto* player = RE::PlayerCharacter::GetSingleton();
 			if (!player || !g_settled) {
 				return;
@@ -207,6 +231,7 @@ namespace scssc::conversion
 				if (!a_event || !a_event->actor || !a_event->actor->IsPlayerRef() || !pool::IsReady() || !g_settled) {
 					return RE::BSEventNotifyControl::kContinue;
 				}
+				++g_inventoryGeneration;
 				const auto baseID = a_event->baseObject;
 				const bool equipped = a_event->equipped;
 				// Learn the charge spell now, inside the event: SCS only queues its Sync here (Events.cpp:19-20)
@@ -230,6 +255,9 @@ namespace scssc::conversion
 
 			RE::BSEventNotifyControl ProcessEvent(const RE::TESContainerChangedEvent* a_event, RE::BSTEventSource<RE::TESContainerChangedEvent>*) override
 			{
+				if (a_event && (a_event->oldContainer == kPlayerRef || a_event->newContainer == kPlayerRef)) {
+					++g_inventoryGeneration;  // the player's inventory lists may have been rebuilt
+				}
 				if (!a_event || a_event->oldContainer != kPlayerRef || a_event->newContainer == kPlayerRef || !g_settled) {
 					return RE::BSEventNotifyControl::kContinue;
 				}
@@ -280,7 +308,11 @@ namespace scssc::conversion
 
 	bool IsBlocked() { return g_blocked; }
 
-	void SetSettled(bool a_settled) { g_settled = a_settled; }
+	void SetSettled(bool a_settled)
+	{
+		g_settled = a_settled;
+		++g_inventoryGeneration;  // a load or new game replaces every inventory list
+	}
 
 	// A charge spell put straight into a hand (no staff there to intercept it, SCS Equipment.cpp:38-42)
 	// would cast for free through the normal hand pipeline, which never reaches the cast hook.
