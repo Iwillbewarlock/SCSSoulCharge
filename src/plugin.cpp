@@ -1,5 +1,9 @@
 #include "PCH.h"
 
+#include "keywords.h"
+#include "selftest.h"
+#include "settings.h"
+
 namespace
 {
 	constexpr std::array kSupportedRuntimes{
@@ -48,5 +52,23 @@ SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
 		return true;  // stay loaded but inert, so the log explains why nothing happens
 	}
 	logger::info("Runtime check PASS ({})", REL::Module::IsAE() ? "AE" : "SE");
+
+	scssc::Settings::Get().Load();
+	if (!scssc::keywords::Install()) {
+		logger::critical("Keyword hook not installed; nothing is converted");
+		return true;
+	}
+
+	auto* messaging = SKSE::GetMessagingInterface();
+	if (!messaging || !messaging->RegisterListener([](SKSE::MessagingInterface::Message* a_msg) {
+			if (a_msg && a_msg->type == SKSE::MessagingInterface::kDataLoaded) {
+				const auto& stats = scssc::keywords::GetStats();
+				logger::info("kDataLoaded: staves={} converted={} skipped={} ready={}",
+					stats.staves, stats.converted, stats.skipped, stats.ready);
+				scssc::selftest::RunDataLoaded();
+			}
+		})) {
+		logger::critical("SKSE messaging interface unavailable");
+	}
 	return true;
 }
