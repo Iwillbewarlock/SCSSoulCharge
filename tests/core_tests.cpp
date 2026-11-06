@@ -45,7 +45,7 @@ namespace
 		t = ConcentrationTick(1.0f, 20.0f, 0.1f);
 		Check(Near(t.debit, 1.0f) && t.interrupt, "tick never bills more than what is left, then stops");
 		t = ConcentrationTick(100.0f, 20.0f, 0.3f);
-		Check(t.debit == 0.0f && t.interrupt, "large frame gap stops without billing");
+		Check(t.debit == 0.0f && !t.interrupt, "large frame gap skips billing and keeps the channel");
 		t = ConcentrationTick(100.0f, 20.0f, nan);
 		Check(t.debit == 0.0f && t.interrupt, "invalid dt stops without billing");
 	}

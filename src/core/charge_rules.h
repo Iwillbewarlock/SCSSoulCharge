@@ -5,7 +5,7 @@
 
 namespace scssc::core
 {
-	// Longest frame we still bill; longer gaps (pause, hitch) stop the channel instead (SCS uses the same 0.25 s).
+	// Longest frame we bill; a longer gap (hitch, save stall) is skipped, not billed late (SCS uses the same 0.25 s).
 	inline constexpr float kMaxBilledFrameSeconds = 0.25f;
 
 	// Fire-and-forget: allowed only when the staff holds at least one full shot.

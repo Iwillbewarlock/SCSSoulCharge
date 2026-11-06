@@ -6,6 +6,8 @@
 #include "pool.h"
 #include "selftest.h"
 
+#include <unordered_map>
+
 namespace scssc::conversion
 {
 	namespace
@@ -13,6 +15,9 @@ namespace scssc::conversion
 		constexpr RE::FormID kPlayerRef = 0x14;
 
 		bool g_blocked = false;
+		// Per-item names (ExtraTextDisplayData) seen when a staff was converted; SCS overwrites them (Naming.cpp:20-38).
+		// Keyed by the item's extra list, which stays the same object while the item is held.
+		std::unordered_map<const RE::ExtraDataList*, std::string> g_itemNames;
 		bool g_settled = false;  // false between Revert and kPostLoadGame/kNewGame: inventory is being rebuilt
 
 		// A staff this run converts (base got SCS keywords from us).
@@ -91,6 +96,9 @@ namespace scssc::conversion
 			if (!spell) {
 				return;
 			}
+			if (const auto* custom = worn.list->GetByType<RE::ExtraTextDisplayData>(); custom && custom->displayName.c_str()) {
+				g_itemNames.try_emplace(worn.list, custom->displayName.c_str());  // before SCS can overwrite it
+			}
 			if (!worn.list->HasType(RE::ExtraDataType::kEnchantment)) {
 				worn.list->SetEnchantment(shared, static_cast<std::uint16_t>(a_weapon->amountofEnchantment), false);
 				logger::info("CONVERT {} {:08X} '{}': shared ENCH attached, maxCharge={}", a_left ? "L" : "R",
@@ -153,25 +161,6 @@ namespace scssc::conversion
 			return reverted;
 		}
 
-		// A charge spell put straight into a hand (no staff there to intercept it, SCS Equipment.cpp:38-42)
-		// would cast for free through the normal hand pipeline, which never reaches our cast hook.
-		void GuardBareHands(RE::PlayerCharacter* a_player, RE::FormID a_spellID)
-		{
-			auto* spell = RE::TESForm::LookupByID<RE::SpellItem>(a_spellID);
-			if (!pool::IsPoolSpell(spell)) {
-				return;
-			}
-			for (const bool left : { true, false }) {
-				if (a_player->GetEquippedObject(left) == spell) {
-					a_player->DeselectSpell(spell);
-					const bool removed = a_player->GetEquippedObject(left) != spell;
-					logger::info("BARE {} charge spell {:08X} unequipped from hand: {}", left ? "L" : "R", a_spellID, removed);
-					selftest::Report("T-BARE", removed, std::format("hand={} spell={:08X} stillEquipped={}", left ? "L" : "R", a_spellID, !removed));
-					RE::SendHUDMessage::ShowHUDMessage("Charge spells can only be cast through their staff");
-				}
-			}
-		}
-
 		void HandleEquip(RE::FormID a_baseID, bool a_equipped)
 		{
 			auto* player = RE::PlayerCharacter::GetSingleton();
@@ -179,7 +168,7 @@ namespace scssc::conversion
 				return;
 			}
 			if (a_equipped) {
-				GuardBareHands(player, a_baseID);
+				GuardBareHands(player);
 			}
 			auto* weapon = RE::TESForm::LookupByID<RE::TESObjectWEAP>(a_baseID);
 			if (!weapon) {
@@ -289,6 +278,51 @@ namespace scssc::conversion
 
 	void SetSettled(bool a_settled) { g_settled = a_settled; }
 
+	// A charge spell put straight into a hand (no staff there to intercept it, SCS Equipment.cpp:38-42)
+	// would cast for free through the normal hand pipeline, which never reaches the cast hook.
+	void GuardBareHands(RE::PlayerCharacter* a_player)
+	{
+		for (const bool left : { true, false }) {
+			auto* form = a_player->GetEquippedObject(left);
+			auto* spell = form ? form->As<RE::SpellItem>() : nullptr;
+			if (!spell || !pool::IsPoolSpell(spell)) {
+				continue;
+			}
+			a_player->DeselectSpell(spell);
+			const bool removed = a_player->GetEquippedObject(left) != spell;
+			// Runs every frame: report a stuck spell once per 2 s, not 60 times a second.
+			static auto lastReport = std::chrono::steady_clock::time_point{};
+			const auto  now = std::chrono::steady_clock::now();
+			if (removed || now - lastReport >= std::chrono::seconds(2)) {
+				lastReport = now;
+				logger::info("BARE {} charge spell {:08X} unequipped from hand: {}", left ? "L" : "R", spell->GetFormID(), removed);
+				selftest::Report("T-BARE", removed, std::format("hand={} spell={:08X} stillEquipped={}", left ? "L" : "R", spell->GetFormID(), !removed));
+				RE::SendHUDMessage::ShowHUDMessage("Charge spells can only be cast through their staff");
+			}
+		}
+	}
+
+	bool RestoreItemName(RE::PlayerCharacter* a_player, bool a_left)
+	{
+		auto* weapon = a_player->GetEquippedObject(a_left);
+		auto* base = weapon ? weapon->As<RE::TESObjectWEAP>() : nullptr;
+		if (!base) {
+			return false;
+		}
+		const auto worn = FindWorn(a_player, base, a_left);
+		const auto it = worn.list ? g_itemNames.find(worn.list) : g_itemNames.end();
+		auto*      custom = worn.list ? worn.list->GetByType<RE::ExtraTextDisplayData>() : nullptr;
+		if (it == g_itemNames.end() || !custom) {
+			return false;
+		}
+		const char* now = custom->displayName.c_str();
+		if (now && it->second == now) {
+			return false;
+		}
+		custom->SetName(it->second.c_str());
+		return true;
+	}
+
 	std::optional<bool> HandForSpell(RE::PlayerCharacter* a_player, const RE::SpellItem* a_spell)
 	{
 		for (const bool left : { true, false }) {
@@ -301,6 +335,7 @@ namespace scssc::conversion
 
 	void ReconcilePlayer()
 	{
+		g_itemNames.clear();  // extra lists of the previous save are gone
 		auto* player = RE::PlayerCharacter::GetSingleton();
 		auto* shared = pool::SharedEnchantment();
 		if (!player || !pool::IsReady() || !shared) {
@@ -331,5 +366,6 @@ namespace scssc::conversion
 			}
 		}
 		ReleaseUnbackedSpells(player);
+		GuardBareHands(player);
 	}
 }

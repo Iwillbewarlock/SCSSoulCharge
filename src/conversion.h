@@ -20,4 +20,10 @@ namespace scssc::conversion
 
 	// The hand (true = left) whose held converted staff backs this charge spell.
 	[[nodiscard]] std::optional<bool> HandForSpell(RE::PlayerCharacter* a_player, const RE::SpellItem* a_spell);
+
+	// Unequips charge spells found in a bare hand. Called from equip events, after loads and every frame.
+	void GuardBareHands(RE::PlayerCharacter* a_player);
+
+	// Puts back a converted item's own display name if SCS replaced it. True when something changed.
+	bool RestoreItemName(RE::PlayerCharacter* a_player, bool a_left);
 }

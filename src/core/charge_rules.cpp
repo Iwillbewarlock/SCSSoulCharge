@@ -38,9 +38,11 @@ namespace scssc::core
 
 	ChannelTick ConcentrationTick(float a_charge, float a_costPerSecond, float a_deltaSeconds)
 	{
-		if (!ValidAmount(a_charge) || !ValidAmount(a_costPerSecond) || !std::isfinite(a_deltaSeconds) ||
-			a_deltaSeconds < 0.0f || a_deltaSeconds > kMaxBilledFrameSeconds) {
+		if (!ValidAmount(a_charge) || !ValidAmount(a_costPerSecond) || !std::isfinite(a_deltaSeconds) || a_deltaSeconds < 0.0f) {
 			return { 0.0f, true };
+		}
+		if (a_deltaSeconds > kMaxBilledFrameSeconds) {
+			return {};  // a hitch or save stall: skip billing this frame, keep the channel
 		}
 		if (a_costPerSecond == 0.0f) {
 			return {};
