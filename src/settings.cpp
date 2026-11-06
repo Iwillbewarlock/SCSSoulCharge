@@ -27,7 +27,10 @@ namespace scssc
 			while (start <= buffer.size()) {
 				const auto end = buffer.find(L',', start);
 				auto       item = buffer.substr(start, end == std::wstring::npos ? std::wstring::npos : end - start);
-				std::erase_if(item, [](wchar_t c) { return c == L' ' || c == L'\t'; });
+				// trim the ends only: plugin names may contain spaces
+				const auto first = item.find_first_not_of(L" \t");
+				const auto last = item.find_last_not_of(L" \t");
+				item = first == std::wstring::npos ? std::wstring{} : item.substr(first, last - first + 1);
 				if (!item.empty()) {
 					out.push_back(SKSE::stl::utf16_to_utf8(item).value_or(""));
 				}

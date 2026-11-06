@@ -17,6 +17,7 @@ namespace scssc::pool
 		struct State
 		{
 			bool                                           ready{ false };
+			bool                                           fullNoticeShown{ false };
 			std::vector<RE::SpellItem*>                    spells;
 			RE::EnchantmentItem*                           shared{ nullptr };
 			core::PoolTable                                table{ kPoolSize };
@@ -98,7 +99,10 @@ namespace scssc::pool
 		if (!slot) {
 			logger::error("Charge spell pool full ({} slots); '{}' {:08X} not converted",
 				kPoolSize, a_enchantment->GetName(), a_enchantment->GetFormID());
-			RE::SendHUDMessage::ShowHUDMessage("SCSSoulCharge: charge spell pool is full");
+			if (!state.fullNoticeShown) {
+				state.fullNoticeShown = true;
+				RE::SendHUDMessage::ShowHUDMessage("SCSSoulCharge: charge spell pool is full");
+			}
 			return nullptr;
 		}
 		auto* spell = state.spells[*slot];
@@ -147,6 +151,8 @@ namespace scssc::pool
 	}
 
 	RE::EnchantmentItem* SharedEnchantment() { return GetState().shared; }
+
+	const std::vector<RE::SpellItem*>& Spells() { return GetState().spells; }
 
 	core::PoolTable& Table() { return GetState().table; }
 

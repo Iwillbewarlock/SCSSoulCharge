@@ -73,9 +73,9 @@ SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
 			case SKSE::MessagingInterface::kDataLoaded:
 				{
 					const auto& stats = scssc::keywords::GetStats();
-					logger::info("kDataLoaded: staves={} converted={} skipped={} ready={}",
-						stats.staves, stats.converted, stats.skipped, stats.ready);
-					if (stats.ready && scssc::pool::Resolve()) {
+					logger::info("kDataLoaded: staves={} converted={} skipped={} scriptedSeenAtInitItem={} ready={}",
+						stats.staves, stats.converted, stats.skipped, stats.scriptedSeen, stats.ready);
+					if (stats.ready && scssc::pool::IsReady()) {
 						scssc::conversion::Install();
 					}
 					scssc::selftest::RunDataLoaded();

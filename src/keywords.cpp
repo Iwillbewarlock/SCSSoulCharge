@@ -3,6 +3,7 @@
 #include "keywords.h"
 
 #include "core/staff_filter.h"
+#include "pool.h"
 #include "settings.h"
 
 #include <unordered_set>
@@ -23,6 +24,7 @@ namespace scssc::keywords
 		struct State
 		{
 			bool                           resolved{ false };
+			std::uint32_t                  failedResolves{ 0 };
 			RE::BGSKeyword*                staffKeyword{ nullptr };
 			RE::BGSKeyword*                tierKeyword{ nullptr };
 			core::StaffFilterSettings      filter;
@@ -42,21 +44,27 @@ namespace scssc::keywords
 			if (a_state.resolved) {
 				return;
 			}
-			a_state.resolved = true;
 			auto* data = RE::TESDataHandler::GetSingleton();
 			if (!data || !data->LookupModByName(kScsPlugin) || !data->LookupModByName(kOwnPlugin)) {
+				a_state.resolved = true;  // a missing plugin will not appear later
 				logger::critical("{} or {} is not active; no staff gets SCS keywords", kScsPlugin, kOwnPlugin);
 				return;
 			}
 			const auto& settings = Settings::Get();
 			a_state.staffKeyword = data->LookupForm<RE::BGSKeyword>(kScsStaffKeyword, kScsPlugin);
 			a_state.tierKeyword = data->LookupForm<RE::BGSKeyword>(kBasicTierKeywords[static_cast<std::size_t>(settings.basicTier)], kScsPlugin);
-			if (!a_state.staffKeyword || !a_state.tierKeyword) {
-				logger::critical("SCS keywords not found in {} (expected 2.1.1); no staff gets SCS keywords", kScsPlugin);
-				return;
+			// Everything conversion needs must exist before the first keyword: a keyworded staff that is
+			// never converted is blocked by SCS (Charge.cpp:128-142).
+			if (!a_state.staffKeyword || !a_state.tierKeyword || !pool::Resolve()) {
+				++a_state.failedResolves;
+				logger::error("SCS keywords, charge spells or the shared ENCH not found (attempt {}); staff skipped",
+					a_state.failedResolves);
+				return;  // retried on the next staff, in case forms are initialised plugin by plugin
 			}
+			a_state.resolved = true;
 			a_state.filter = ResolveFilterSettings(settings);
 			a_state.stats.ready = true;
+			logger::info("Keyword setup ready after {} failed attempt(s)", a_state.failedResolves);
 		}
 
 		bool HasScsKeyword(const RE::TESObjectWEAP* a_weapon, const State& a_state)
@@ -84,6 +92,7 @@ namespace scssc::keywords
 			++state.stats.staves;
 			if (!state.stats.ready) {
 				++state.stats.skipped;
+				state.stats.skippedBeforeReady.push_back(a_weapon->GetFormID());
 				return;
 			}
 			const auto* enchantment = a_weapon->formEnchanting;
@@ -94,6 +103,9 @@ namespace scssc::keywords
 			facts.enchantmentCost = enchantment ? RawEnchantmentCost(enchantment) : 0.0f;
 			facts.hasScsKeyword = HasScsKeyword(a_weapon, state);
 			facts.hasScript = a_weapon->HasVMAD();
+			if (facts.hasScript) {
+				++state.stats.scriptedSeen;
+			}
 			const auto verdict = core::ClassifyStaff(facts, state.filter);
 			if (verdict != core::StaffVerdict::kEligible) {
 				++state.stats.skipped;
@@ -108,7 +120,7 @@ namespace scssc::keywords
 			++state.stats.converted;
 			state.stats.lastAddMs = std::chrono::duration_cast<std::chrono::milliseconds>(
 				std::chrono::steady_clock::now().time_since_epoch()).count();
-			logger::info("STAFF add {:08X} '{}' ench={:08X}", facts.formID, a_weapon->GetName(), enchantment->GetFormID());
+			logger::info("STAFF add {:08X} '{}' ench={:08X} hasScript={}", facts.formID, a_weapon->GetName(), enchantment->GetFormID(), facts.hasScript);
 		}
 
 		void InitItemThunk(RE::TESObjectWEAP* a_weapon)

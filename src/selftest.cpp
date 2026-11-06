@@ -23,18 +23,51 @@ namespace scssc::selftest
 			auto*       data = RE::TESDataHandler::GetSingleton();
 			auto*       keyword = data ? data->LookupForm<RE::BGSKeyword>(kScsStaffKeyword, kScsPlugin) : nullptr;
 			std::uint32_t withKeyword = 0;
+			std::string   foreign;  // keyworded by neither SpellCastingStaff.esp nor us (another mod or patch)
 			if (data && keyword) {
 				for (auto* weapon : data->GetFormArray<RE::TESObjectWEAP>()) {
-					if (weapon && weapon->HasKeyword(keyword)) {
-						++withKeyword;
+					if (!weapon || !weapon->HasKeyword(keyword)) {
+						continue;
+					}
+					++withKeyword;
+					const auto* file = weapon->GetFile(0);
+					const bool  scsOwn = file && file->GetFilename() == kScsPlugin;
+					if (!scsOwn && !keywords::IsConverted(weapon->GetFormID())) {
+						foreign += std::format(" {:08X}", weapon->GetFormID());
 					}
 				}
 			}
-			const bool pass = stats.ready && withKeyword == kScsOwnStaves + stats.converted;
+			const auto filter = ResolveFilterSettings(Settings::Get());
+			std::uint32_t listedMissing = 0;
+			for (const auto id : filter.include) {
+				if (!keywords::IsConverted(id)) {
+					++listedMissing;
+				}
+			}
+			const bool pass = stats.ready && stats.skippedBeforeReady.empty() && stats.converted > 0 && listedMissing == 0 &&
+			                  withKeyword == kScsOwnStaves + stats.converted + static_cast<std::uint32_t>(std::ranges::count(foreign, ' '));
 			Report("T-ORD", pass,
-				std::format("staves={} converted={} skipped={} weaponsWithScsKeyword={} expected={} "
-							"(compare with SpellCastingStaff.log 'N keyword staffs': N must equal weaponsWithScsKeyword)",
-					stats.staves, stats.converted, stats.skipped, withKeyword, kScsOwnStaves + stats.converted));
+				std::format("staves={} converted={} skipped={} skippedBeforeReady={} listedNotConverted={} weaponsWithScsKeyword={} "
+							"foreign=[{} ] (SpellCastingStaff.log with bVerboseLog=1 must say 'ready: {} keyword staffs')",
+					stats.staves, stats.converted, stats.skipped, stats.skippedBeforeReady.size(), listedMissing, withKeyword, foreign,
+					withKeyword));
+		}
+
+		// Is HasVMAD usable at InitItem time? Known scripted staff vs known plain staff (hypothesis check).
+		void CheckScriptDetection()
+		{
+			auto* data = RE::TESDataHandler::GetSingleton();
+			auto* scripted = data ? data->LookupForm<RE::TESObjectWEAP>(0xD62, "ccbgssse019-staffofsheogorath.esl") : nullptr;
+			auto* plain = data ? data->LookupForm<RE::TESObjectWEAP>(0x4C6CA, "Skyrim.esm") : nullptr;
+			if (!scripted || !plain) {
+				Report("T-VMAD", false, std::format("reference staves missing (Sheogorath={} Firebolts={}); not judged", scripted != nullptr, plain != nullptr));
+				return;
+			}
+			const bool scriptedHas = scripted->HasVMAD();
+			const bool plainHas = plain->HasVMAD();
+			Report("T-VMAD", scriptedHas && !plainHas,
+				std::format("at kDataLoaded: StaffOfSheogorath HasVMAD={} (expect 1), StaffOfFirebolts HasVMAD={} (expect 0); InitItem-time values are in the STAFF skip lines",
+					scriptedHas, plainHas));
 		}
 
 		void CheckEsp()
@@ -72,5 +105,6 @@ namespace scssc::selftest
 	{
 		CheckOrder();
 		CheckEsp();
+		CheckScriptDetection();
 	}
 }

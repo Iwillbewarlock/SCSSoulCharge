@@ -13,10 +13,23 @@ namespace scssc::conversion
 		constexpr RE::FormID kPlayerRef = 0x14;
 
 		bool g_blocked = false;
+		bool g_settled = false;  // false between Revert and kPostLoadGame/kNewGame: inventory is being rebuilt
 
-		bool IsConvertedStaff(const RE::TESForm* a_form)
+		// A staff this run converts (base got SCS keywords from us).
+		bool IsConvertibleStaff(const RE::TESForm* a_form)
 		{
 			return a_form && a_form->Is(RE::FormType::Weapon) && keywords::IsConverted(a_form->GetFormID());
+		}
+
+		// An item we converted at some point: SCS's shared ENCH on a weapon that is not one of SCS's own
+		// staves (those carry the shared ENCH on the base record). Independent of this run's INI.
+		bool IsOurConversion(const RE::TESObjectWEAP* a_base, const RE::ExtraDataList* a_list, const RE::EnchantmentItem* a_shared)
+		{
+			if (!a_base || !a_list || !a_shared || a_base->formEnchanting == a_shared) {
+				return false;
+			}
+			const auto* extra = a_list->GetByType<RE::ExtraEnchantment>();
+			return extra && extra->enchantment == a_shared;
 		}
 
 		struct WornItem
@@ -45,30 +58,33 @@ namespace scssc::conversion
 			return {};
 		}
 
-		// The staff's own enchantment, ignoring SCS's shared one we may have attached.
-		RE::EnchantmentItem* OwnEnchantment(const RE::TESObjectWEAP* a_weapon)
+		// The charge spell a hand currently backs: a converted staff in that hand, carrying the shared ENCH.
+		RE::SpellItem* SpellBackedByHand(RE::PlayerCharacter* a_player, bool a_left)
 		{
-			return a_weapon ? a_weapon->formEnchanting : nullptr;
-		}
-
-		bool HandUses(RE::PlayerCharacter* a_player, bool a_left, const RE::EnchantmentItem* a_enchantment)
-		{
-			auto* held = a_player->GetEquippedObject(a_left);
-			return IsConvertedStaff(held) && OwnEnchantment(held->As<RE::TESObjectWEAP>()) == a_enchantment;
+			auto* weapon = a_player->GetEquippedObject(a_left);
+			auto* base = weapon ? weapon->As<RE::TESObjectWEAP>() : nullptr;
+			if (!IsConvertibleStaff(base)) {
+				return nullptr;
+			}
+			const auto worn = FindWorn(a_player, base, a_left);
+			return IsOurConversion(base, worn.list, pool::SharedEnchantment()) ? pool::FindSpell(base->formEnchanting) : nullptr;
 		}
 
 		void ConvertWorn(RE::PlayerCharacter* a_player, RE::TESObjectWEAP* a_weapon, bool a_left)
 		{
-			auto* shared = pool::SharedEnchantment();
-			auto* own = OwnEnchantment(a_weapon);
+			auto*      shared = pool::SharedEnchantment();
+			auto*      own = a_weapon->formEnchanting;
 			const auto worn = FindWorn(a_player, a_weapon, a_left);
 			if (!shared || !own || !worn.list) {
 				logger::warn("CONVERT {} {:08X}: worn item not found", a_left ? "L" : "R", a_weapon->GetFormID());
 				return;
 			}
 			if (const auto* existing = worn.list->GetByType<RE::ExtraEnchantment>(); existing && existing->enchantment != shared) {
-				logger::info("CONVERT {} {:08X}: player-made enchantment {:08X}, left alone", a_left ? "L" : "R",
-					a_weapon->GetFormID(), existing->enchantment ? existing->enchantment->GetFormID() : 0u);
+				// SCS still treats this copy as a catalyst (it checks the base keyword only, Equipment.cpp:261-278),
+				// but we never overwrite an enchantment the player or another mod put on the item.
+				logger::warn("CONVERT {} {:08X}: item has its own extra enchantment {:08X}; not converted, SCS will not cast with it",
+					a_left ? "L" : "R", a_weapon->GetFormID(), existing->enchantment ? existing->enchantment->GetFormID() : 0u);
+				RE::SendHUDMessage::ShowHUDMessage("SCSSoulCharge: this staff has a custom enchantment and cannot be used as a catalyst");
 				return;
 			}
 			auto* spell = pool::SpellFor(own);
@@ -84,53 +100,83 @@ namespace scssc::conversion
 				a_player->AddSpell(spell);
 			}
 			const auto* resolved = worn.entry->GetEnchantment();
-			selftest::Report("T-C2a", resolved == shared,
-				std::format("hand={} weapon={:08X} entryEnchantment={:08X} shared={:08X} spell={:08X} learned={}",
-					a_left ? "L" : "R", a_weapon->GetFormID(), resolved ? resolved->GetFormID() : 0u, shared->GetFormID(),
+			const auto* listExtra = worn.list->GetByType<RE::ExtraEnchantment>();
+			selftest::Report("T-C2a", resolved == shared && listExtra && listExtra->enchantment == shared,
+				std::format("hand={} weapon={:08X} entryEnchantment={:08X} wornListEnchantment={:08X} shared={:08X} spell={:08X} learned={}",
+					a_left ? "L" : "R", a_weapon->GetFormID(), resolved ? resolved->GetFormID() : 0u,
+					listExtra && listExtra->enchantment ? listExtra->enchantment->GetFormID() : 0u, shared->GetFormID(),
 					spell->GetFormID(), a_player->HasSpell(spell)));
 		}
 
-		void ReleaseSpell(RE::PlayerCharacter* a_player, RE::TESObjectWEAP* a_weapon)
+		// Forget every charge spell no hand backs right now (covers spells of vanished enchantments too).
+		void ReleaseUnbackedSpells(RE::PlayerCharacter* a_player)
 		{
-			auto* own = OwnEnchantment(a_weapon);
-			auto* spell = pool::FindSpell(own);
-			if (!spell || !a_player->HasSpell(spell)) {
-				return;
+			const auto* left = SpellBackedByHand(a_player, true);
+			const auto* right = SpellBackedByHand(a_player, false);
+			for (auto* spell : pool::Spells()) {
+				if (spell != left && spell != right && a_player->HasSpell(spell)) {
+					a_player->RemoveSpell(spell);
+					logger::info("RELEASE charge spell {:08X} (no staff in hand uses it)", spell->GetFormID());
+				}
 			}
-			if (HandUses(a_player, true, own) || HandUses(a_player, false, own)) {
-				return;  // a hand still holds a staff with this enchantment
-			}
-			a_player->RemoveSpell(spell);
-			logger::info("RELEASE {:08X}: charge spell {:08X} removed", a_weapon->GetFormID(), spell->GetFormID());
 		}
 
-		// Restores the staff's own enchantment on every copy of a_base inside a_holder.
-		std::uint32_t RevertIn(RE::ExtraDataList* a_list, const RE::EnchantmentItem* a_shared)
+		std::uint32_t RevertList(const RE::TESObjectWEAP* a_base, RE::ExtraDataList* a_list, const RE::EnchantmentItem* a_shared)
 		{
-			auto* existing = a_list ? a_list->GetByType<RE::ExtraEnchantment>() : nullptr;
-			if (!existing || existing->enchantment != a_shared) {
+			if (!IsOurConversion(a_base, a_list, a_shared)) {
 				return 0;
 			}
 			a_list->RemoveByType(RE::ExtraDataType::kEnchantment);
 			return 1;
 		}
 
-		std::uint32_t RevertInContainer(RE::TESObjectREFR* a_container, RE::FormID a_base, const RE::EnchantmentItem* a_shared)
+		// Restores the own enchantment on every converted copy of a_base (or of any weapon when a_base is null).
+		std::uint32_t RevertInInventory(RE::TESObjectREFR* a_holder, const RE::TESObjectWEAP* a_base, const RE::EnchantmentItem* a_shared,
+			bool a_skipWorn)
 		{
-			auto* changes = a_container ? a_container->GetInventoryChanges() : nullptr;
+			auto* changes = a_holder ? a_holder->GetInventoryChanges() : nullptr;
 			if (!changes || !changes->entryList) {
 				return 0;
 			}
 			std::uint32_t reverted = 0;
 			for (auto* entry : *changes->entryList) {
-				if (!entry || !entry->object || entry->object->GetFormID() != a_base || !entry->extraLists) {
+				auto* base = entry && entry->object ? entry->object->As<RE::TESObjectWEAP>() : nullptr;
+				if (!base || (a_base && base != a_base) || !entry->extraLists) {
 					continue;
 				}
 				for (auto* list : *entry->extraLists) {
-					reverted += RevertIn(list, a_shared);
+					if (list && !(a_skipWorn && list->GetWorn())) {
+						reverted += RevertList(base, list, a_shared);
+					}
 				}
 			}
 			return reverted;
+		}
+
+		void HandleEquip(RE::FormID a_baseID, bool a_equipped)
+		{
+			auto* player = RE::PlayerCharacter::GetSingleton();
+			auto* weapon = RE::TESForm::LookupByID<RE::TESObjectWEAP>(a_baseID);
+			if (!player || !weapon || !g_settled) {
+				return;
+			}
+			if (a_equipped && IsConvertibleStaff(weapon)) {
+				if (g_blocked) {
+					logger::warn("CONVERT {:08X} skipped: conversion blocked for this save", a_baseID);
+				} else {
+					bool matched = false;
+					for (const bool left : { true, false }) {
+						if (player->GetEquippedObject(left) == weapon) {
+							matched = true;
+							ConvertWorn(player, weapon, left);
+						}
+					}
+					if (!matched) {
+						logger::warn("CONVERT {:08X}: equip event but no hand holds it one frame later", a_baseID);
+					}
+				}
+			}
+			ReleaseUnbackedSpells(player);
 		}
 
 		class Sink :
@@ -140,49 +186,39 @@ namespace scssc::conversion
 		public:
 			RE::BSEventNotifyControl ProcessEvent(const RE::TESEquipEvent* a_event, RE::BSTEventSource<RE::TESEquipEvent>*) override
 			{
-				if (!a_event || !a_event->actor || !a_event->actor->IsPlayerRef() || !pool::IsReady()) {
+				if (!a_event || !a_event->actor || !a_event->actor->IsPlayerRef() || !pool::IsReady() || !g_settled) {
 					return RE::BSEventNotifyControl::kContinue;
 				}
-				auto* player = RE::PlayerCharacter::GetSingleton();
-				auto* weapon = RE::TESForm::LookupByID<RE::TESObjectWEAP>(a_event->baseObject);
-				if (!player || !IsConvertedStaff(weapon)) {
-					return RE::BSEventNotifyControl::kContinue;
-				}
-				if (a_event->equipped) {
-					if (g_blocked) {
-						logger::warn("CONVERT {:08X} skipped: conversion blocked for this save", weapon->GetFormID());
-						return RE::BSEventNotifyControl::kContinue;
-					}
-					for (const bool left : { true, false }) {
-						if (player->GetEquippedObject(left) == weapon) {
-							ConvertWorn(player, weapon, left);
-						}
-					}
-				} else {
-					ReleaseSpell(player, weapon);
+				const auto baseID = a_event->baseObject;
+				const bool equipped = a_event->equipped;
+				// The hand state may not be final inside the event (SCS also defers, Events.cpp:19-20).
+				if (auto* tasks = SKSE::GetTaskInterface()) {
+					tasks->AddTask([baseID, equipped] { HandleEquip(baseID, equipped); });
 				}
 				return RE::BSEventNotifyControl::kContinue;
 			}
 
 			RE::BSEventNotifyControl ProcessEvent(const RE::TESContainerChangedEvent* a_event, RE::BSTEventSource<RE::TESContainerChangedEvent>*) override
 			{
-				if (!a_event || a_event->oldContainer != kPlayerRef || a_event->newContainer == kPlayerRef) {
+				if (!a_event || a_event->oldContainer != kPlayerRef || a_event->newContainer == kPlayerRef || !g_settled) {
 					return RE::BSEventNotifyControl::kContinue;
 				}
 				const auto* weapon = RE::TESForm::LookupByID<RE::TESObjectWEAP>(a_event->baseObj);
 				const auto* shared = pool::SharedEnchantment();
-				if (!IsConvertedStaff(weapon) || !shared) {
+				if (!weapon || !shared || weapon->formEnchanting == shared) {
 					return RE::BSEventNotifyControl::kContinue;
 				}
 				std::uint32_t reverted = 0;
 				if (auto dropped = a_event->reference.get()) {
-					reverted += RevertIn(&dropped->extraList, shared);
+					reverted += RevertList(weapon, &dropped->extraList, shared);
 				}
 				if (a_event->newContainer) {
-					reverted += RevertInContainer(RE::TESForm::LookupByID<RE::TESObjectREFR>(a_event->newContainer), a_event->baseObj, shared);
+					reverted += RevertInInventory(RE::TESForm::LookupByID<RE::TESObjectREFR>(a_event->newContainer), weapon, shared, false);
 				}
-				logger::info("LEAVE {:08X} -> {:08X} x{}: {} item(s) got their own enchantment back", a_event->baseObj,
-					a_event->newContainer, a_event->itemCount, reverted);
+				if (reverted) {
+					logger::info("LEAVE {:08X} -> {:08X} x{}: {} item(s) got their own enchantment back", a_event->baseObj,
+						a_event->newContainer, a_event->itemCount, reverted);
+				}
 				return RE::BSEventNotifyControl::kContinue;
 			}
 		};
@@ -205,35 +241,48 @@ namespace scssc::conversion
 	{
 		if (g_blocked != a_blocked) {
 			logger::warn("Conversion {} ({})", a_blocked ? "BLOCKED" : "unblocked", a_reason);
+			if (a_blocked) {
+				RE::SendHUDMessage::ShowHUDMessage("SCSSoulCharge: staff conversion paused for this save (see SCSSoulCharge.log)");
+			}
 		}
 		g_blocked = a_blocked;
-		if (a_blocked) {
-			RE::SendHUDMessage::ShowHUDMessage("SCSSoulCharge: staff conversion paused for this save (see SCSSoulCharge.log)");
-		}
 	}
 
 	bool IsBlocked() { return g_blocked; }
 
+	void SetSettled(bool a_settled) { g_settled = a_settled; }
+
 	void ReconcilePlayer()
 	{
 		auto* player = RE::PlayerCharacter::GetSingleton();
-		if (!player || !pool::IsReady() || g_blocked) {
+		auto* shared = pool::SharedEnchantment();
+		if (!player || !pool::IsReady() || !shared) {
 			return;
 		}
-		for (const bool left : { true, false }) {
-			auto* weapon = player->GetEquippedObject(left);
-			if (IsConvertedStaff(weapon)) {
-				ConvertWorn(player, weapon->As<RE::TESObjectWEAP>(), left);
+		// Converted items this run no longer converts (INI changed) get their own enchantment back.
+		auto* changes = player->GetInventoryChanges();
+		std::uint32_t reverted = 0;
+		if (changes && changes->entryList) {
+			for (auto* entry : *changes->entryList) {
+				auto* base = entry && entry->object ? entry->object->As<RE::TESObjectWEAP>() : nullptr;
+				if (base && !IsConvertibleStaff(base) && entry->extraLists) {
+					for (auto* list : *entry->extraLists) {
+						reverted += RevertList(base, list, shared);
+					}
+				}
 			}
 		}
-		// Charge spells the player still knows without holding a matching staff (e.g. saved mid-swap).
-		for (const auto& entry : pool::Table().Entries()) {
-			auto* enchantment = entry.enchantment ? RE::TESForm::LookupByID<RE::EnchantmentItem>(entry.enchantment) : nullptr;
-			auto* spell = pool::FindSpell(enchantment);
-			if (spell && player->HasSpell(spell) && !HandUses(player, true, enchantment) && !HandUses(player, false, enchantment)) {
-				player->RemoveSpell(spell);
-				logger::info("RECONCILE: charge spell {:08X} removed (no staff in hand uses it)", spell->GetFormID());
+		if (reverted) {
+			logger::info("RECONCILE: {} item(s) no longer converted got their own enchantment back", reverted);
+		}
+		if (!g_blocked) {
+			for (const bool left : { true, false }) {
+				auto* weapon = player->GetEquippedObject(left);
+				if (IsConvertibleStaff(weapon)) {
+					ConvertWorn(player, weapon->As<RE::TESObjectWEAP>(), left);
+				}
 			}
 		}
+		ReleaseUnbackedSpells(player);
 	}
 }

@@ -8,7 +8,8 @@ namespace scssc::pool
 {
 	inline constexpr std::uint32_t kPoolSize = 1024;
 
-	// kDataLoaded: finds the placeholder spells and SCS's shared staff enchantment. False = feature off.
+	// Finds the placeholder spells and SCS's shared staff enchantment. Called from the first staff
+	// InitItem, before any keyword is added: if it fails, no staff is touched. False = feature off.
 	bool Resolve();
 	[[nodiscard]] bool IsReady();
 
@@ -26,6 +27,7 @@ namespace scssc::pool
 
 	// SpellCastingStaff.esp 0x80B, the shared dummy staff enchantment.
 	[[nodiscard]] RE::EnchantmentItem* SharedEnchantment();
+	[[nodiscard]] const std::vector<RE::SpellItem*>& Spells();
 
 	// Co-save support. Clear empties every placeholder; Refill re-applies the table after a load.
 	[[nodiscard]] core::PoolTable& Table();

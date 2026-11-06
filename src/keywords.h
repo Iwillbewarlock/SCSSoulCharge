@@ -12,8 +12,10 @@ namespace scssc::keywords
 		std::uint32_t staves{ 0 };      // WEAPs with the staff animation seen by the hook
 		std::uint32_t converted{ 0 };   // keywords added
 		std::uint32_t skipped{ 0 };
+		std::uint32_t scriptedSeen{ 0 };  // HasVMAD() true at InitItem time (T-VMAD evidence)
 		bool          ready{ false };   // both plugins present and keywords resolved
 		std::int64_t  lastAddMs{ 0 };   // steady clock, for T-ORD
+		std::vector<RE::FormID> skippedBeforeReady;  // staves seen before setup succeeded (must stay empty)
 	};
 
 	[[nodiscard]] const Stats& GetStats();

@@ -14,5 +14,7 @@ namespace scssc::conversion
 	// Co-save / load lifecycle.
 	void SetBlocked(bool a_blocked, std::string_view a_reason);
 	[[nodiscard]] bool IsBlocked();
-	void ReconcilePlayer();  // after load or new game: spells match what the player holds
+	// Events are ignored until the save is settled (Revert -> false, kPostLoadGame/kNewGame -> true).
+	void SetSettled(bool a_settled);
+	void ReconcilePlayer();  // after load or new game: items and spells match what the player holds
 }
