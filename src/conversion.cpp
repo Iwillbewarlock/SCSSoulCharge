@@ -149,6 +149,20 @@ namespace scssc::conversion
 			return IsOurConversion(base, worn.list, pool::SharedEnchantment()) ? pool::FindSpell(OwnEnchantment(base)) : nullptr;
 		}
 
+		// In-game test (2026-11-06): even with the record swapped after the equip, the hand still cast the
+		// staff's own ENCH, so the hand keeps what was chosen at equip time. Hypothesis: that choice lives in
+		// the actor's per-hand selected-spell slot. Replace it with the shared ENCH and log what was there.
+		void SelectSharedInHand(RE::PlayerCharacter* a_player, bool a_left, const RE::EnchantmentItem* a_own, RE::EnchantmentItem* a_shared)
+		{
+			auto&       slot = a_player->GetActorRuntimeData().selectedSpells[a_left ? RE::Actor::SlotTypes::kLeftHand : RE::Actor::SlotTypes::kRightHand];
+			const auto* before = slot;
+			if (slot == a_own || slot == nullptr) {
+				slot = a_shared;
+			}
+			logger::info("SELECT {} hand slot {:08X} -> {:08X} (own ENCH {:08X})", a_left ? "L" : "R", before ? before->GetFormID() : 0u,
+				slot ? slot->GetFormID() : 0u, a_own ? a_own->GetFormID() : 0u);
+		}
+
 		void ConvertWorn(RE::PlayerCharacter* a_player, RE::TESObjectWEAP* a_weapon, bool a_left)
 		{
 			auto*      shared = pool::SharedEnchantment();
@@ -179,6 +193,7 @@ namespace scssc::conversion
 					a_weapon->GetFormID(), a_weapon->GetName(), a_weapon->amountofEnchantment);
 			}
 			SwapRecord(a_weapon, shared);
+			SelectSharedInHand(a_player, a_left, own, shared);
 			if (!a_player->HasSpell(spell)) {
 				a_player->AddSpell(spell);
 			}
