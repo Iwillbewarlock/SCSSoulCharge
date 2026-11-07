@@ -1,9 +1,9 @@
 #pragma once
 
-// The staff tip of a converted staff shows the casting art of the spell bound to it (user request
-// 2026-11-07). The hand casts SCS's shared dummy enchantment, so its effect's casting art and light are
+// While charging, the tip of a converted staff shows the casting art of the spell bound to it (user request
+// 2026-11-07, confirmed in game). The idle glow belongs to the staff model and is not touched. The hand casts SCS's shared dummy enchantment, so its effect's casting art and light are
 // swapped for those of the bound spell's main effect while a converted staff is held, and restored when
-// none is. Hypothesis (to be judged by eye): the tip glow comes from that casting art.
+// none is.
 // The binding is learned from SCS's menu equip call (we chain onto the call site SCS hooks) and from the
 // spell SCS actually fires.
 

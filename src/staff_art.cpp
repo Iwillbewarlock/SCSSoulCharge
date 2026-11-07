@@ -2,7 +2,6 @@
 
 #include "staff_art.h"
 
-#include "conversion.h"
 #include "keywords.h"
 #include "pool.h"
 
@@ -68,33 +67,6 @@ namespace scssc::staff_art
 			}
 		}
 
-		// The idle glow (weapon enchantment visuals) is built when the staff is equipped: equip it again so the
-		// engine rebuilds it from the swapped enchantment art. Runs as a task, outside the menu call.
-		void ReequipConvertedStaves()
-		{
-			auto* player = RE::PlayerCharacter::GetSingleton();
-			auto* manager = RE::ActorEquipManager::GetSingleton();
-			auto* data = RE::TESDataHandler::GetSingleton();
-			if (!player || !manager || !data) {
-				return;
-			}
-			for (const bool left : { true, false }) {
-				auto* weapon = player->GetEquippedObject(left);
-				auto* base = weapon ? weapon->As<RE::TESObjectWEAP>() : nullptr;
-				if (!base || !keywords::IsConverted(base->GetFormID())) {
-					continue;
-				}
-				auto* list = const_cast<RE::ExtraDataList*>(conversion::WornList(player, left));
-				auto* slot = data->LookupForm<RE::BGSEquipSlot>(left ? kLeftHandSlot : kRightHandSlot, "Skyrim.esm");
-				if (!list || !slot) {
-					continue;
-				}
-				manager->UnequipObject(player, base, list, 1, slot, false, false, false, true);
-				manager->EquipObject(player, base, list, 1, slot, false, false, false, true);
-				logger::info("STAFF ART {} staff {:08X} re-equipped to rebuild its glow", left ? "L" : "R", base->GetFormID());
-			}
-		}
-
 		void Write(RE::BGSArtObject* a_castingArt, RE::TESObjectLIGH* a_light, RE::BGSArtObject* a_enchantArt,
 			RE::TESEffectShader* a_enchantShader, RE::BGSReferenceEffect* a_enchantVisuals)
 		{
@@ -126,19 +98,16 @@ namespace scssc::staff_art
 				return;
 			}
 			const auto& from = source->data;
-			// Spell effects rarely carry enchantment visuals; their casting art stands in for the idle glow.
-			auto* idleArt = from.enchantEffectArt ? from.enchantEffectArt : from.castingArt;
-			Write(from.castingArt, from.light, idleArt, from.enchantShader, from.enchantVisuals);
+			// Only the charging art follows the spell. The idle glow of the staves tested here is part of the
+			// staff model (Praedy's Staves NIF 'FX' shape with an effect shader), not of the enchantment, so the
+			// enchantment visuals stay SCS's (user test 2026-11-07: idle glow unchanged even after re-equipping).
+			Write(from.castingArt, from.light, g_original.enchantArt, g_original.enchantShader, g_original.enchantVisuals);
 			g_applied = source;
-			logger::info("STAFF ART <- '{}' {:08X}: castingArt={:08X} idleArt={:08X} enchantShader={:08X} light={:08X}", a_spell->GetName(),
-				a_spell->GetFormID(), from.castingArt ? from.castingArt->GetFormID() : 0u, idleArt ? idleArt->GetFormID() : 0u,
-				from.enchantShader ? from.enchantShader->GetFormID() : 0u, from.light ? from.light->GetFormID() : 0u);
+			logger::info("STAFF ART <- '{}' {:08X}: castingArt={:08X} light={:08X}", a_spell->GetName(), a_spell->GetFormID(),
+				from.castingArt ? from.castingArt->GetFormID() : 0u, from.light ? from.light->GetFormID() : 0u);
 			auto* player = RE::PlayerCharacter::GetSingleton();
 			if (player) {
 				RefreshCastingArt(player, from.castingArt);
-			}
-			if (auto* tasks = SKSE::GetTaskInterface()) {
-				tasks->AddTask([] { ReequipConvertedStaves(); });
 			}
 		}
 
