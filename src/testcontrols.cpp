@@ -113,6 +113,8 @@ namespace scssc::testcontrols
 			bool        emptyCharge;
 			const char* label;
 		};
+		constexpr RE::FormID kSpikeOakflesh = 0x5AD5C;  // self buff with a duration: leaves an ActiveEffect that references the copy
+
 		constexpr std::array kSpikeSteps{
 			SpikeStep{ kSpikeIceSpike, false, true, false, "Ice Spike, paid from staff charge" },
 			SpikeStep{ kSpikeFlames, false, true, false, "Flames (concentration), paid from staff charge" },
@@ -120,6 +122,7 @@ namespace scssc::testcontrols
 			SpikeStep{ kSpikeIceSpike, true, false, false, "Ice Spike, magicka, nothing on the item" },
 			SpikeStep{ kSpikeFlames, true, false, false, "Flames (concentration), magicka, nothing on the item" },
 			SpikeStep{ kSpikeIceSpike, true, false, true, "Ice Spike, magicka, staff charge empty" },
+			SpikeStep{ kSpikeOakflesh, true, false, false, "Oakflesh (self buff), magicka, nothing on the item" },
 		};
 
 		struct SpikeState
@@ -132,6 +135,8 @@ namespace scssc::testcontrols
 			RE::EffectSetting*   recordEffect{ nullptr };  // the staff record's main effect while its art is borrowed
 			RE::BGSArtObject*    recordCastingArt{ nullptr };
 			RE::TESObjectLIGH*   recordLight{ nullptr };
+			std::string          originalName;
+			bool                 hadNameData{ false };
 			const RE::MagicItem* lastSpell{ nullptr };
 			std::uint32_t        lastState{ 0 };
 		};
@@ -332,6 +337,69 @@ namespace scssc::testcontrols
 				a_source->data.castingArt ? a_source->data.castingArt->GetFormID() : 0u, g_spike.recordCastingArt ? g_spike.recordCastingArt->GetFormID() : 0u);
 		}
 
+		std::string DescribeUniqueId(RE::ExtraDataList* a_list)
+		{
+			const auto* id = a_list->GetByType<RE::ExtraUniqueID>();
+			return id ? std::format("({:08X},{})", id->baseID, id->uniqueID) : "none";
+		}
+
+		// Every inventory stack of this staff: answers whether a worn list can hold more than one item (T-STACK) and
+		// whether the unique ID survives moves and saves (T-UNIQ).
+		void LogStaffIdentity(RE::PlayerCharacter* a_player, RE::TESObjectWEAP* a_staff, const char* a_when)
+		{
+			auto* changes = a_player->GetInventoryChanges();
+			if (!changes || !changes->entryList) {
+				return;
+			}
+			for (auto* entry : *changes->entryList) {
+				if (!entry || entry->object != a_staff) {
+					continue;
+				}
+				logger::info("SPIKE identity [{}] staff={:08X} countDelta={} lists={}", a_when, a_staff->GetFormID(), entry->countDelta,
+					entry->extraLists ? std::distance(entry->extraLists->begin(), entry->extraLists->end()) : 0);
+				if (!entry->extraLists) {
+					continue;
+				}
+				for (auto* list : *entry->extraLists) {
+					if (list) {
+						const auto* name = list->GetDisplayName(a_staff);
+						logger::info("SPIKE identity [{}]   worn={} count={} uid={} name='{}'", a_when, list->HasType(RE::ExtraDataType::kWorn), list->GetCount(),
+							DescribeUniqueId(list), name ? name : "");
+					}
+				}
+			}
+		}
+
+		void SetSpikeName(RE::ExtraDataList* a_list, const RE::TESObjectWEAP* a_staff, const RE::SpellItem* a_spell)
+		{
+			if (a_list->GetCount() != 1) {
+				logger::warn("SPIKE name skipped for {:08X}: worn list holds {} items", a_staff->GetFormID(), a_list->GetCount());
+				return;
+			}
+			a_list->SetOverrideName(std::format("{} [{}]", g_spike.originalName, a_spell->GetName()).c_str());
+		}
+
+		void RestoreSpikeName(RE::ExtraDataList* a_list)
+		{
+			if (g_spike.hadNameData) {
+				a_list->SetOverrideName(g_spike.originalName.c_str());
+			} else {
+				a_list->RemoveByType(RE::ExtraDataType::kTextDisplayData);
+			}
+		}
+
+		// Lets the engine assign the ID (its own function sends TESUniqueIDChangeEvent); the ID is read back and logged.
+		void EnsureUniqueId(RE::PlayerCharacter* a_player, RE::TESObjectWEAP* a_staff, RE::ExtraDataList* a_list)
+		{
+			if (a_list->HasType(RE::ExtraDataType::kUniqueID)) {
+				return;
+			}
+			if (auto* changes = a_player->GetInventoryChanges()) {
+				changes->SetUniqueID(a_list, nullptr, a_staff);
+			}
+			logger::info("SPIKE unique id assigned: {}", DescribeUniqueId(a_list));
+		}
+
 		void SpikeAdvance(RE::PlayerCharacter* a_player, RE::TESObjectWEAP* a_staff)
 		{
 			if (const auto* caster = RightHandCaster(a_player); caster && caster->state.underlying() != 0) {
@@ -354,6 +422,7 @@ namespace scssc::testcontrols
 				slot = g_spike.ownSlot;
 				SetCastingArt(a_player, g_spike.ownCastingArt);
 				RestoreRecordArt();
+				RestoreSpikeName(list);
 				g_magickaEnchantment = nullptr;
 				g_stepEnchantment = nullptr;
 				g_recordEnchantment = nullptr;
@@ -376,7 +445,12 @@ namespace scssc::testcontrols
 				g_spike.ownSlot = slot;
 				const auto* caster = RightHandCaster(a_player);
 				g_spike.ownCastingArt = caster ? caster->castingArt : nullptr;
+				g_spike.hadNameData = list->HasType(RE::ExtraDataType::kTextDisplayData);
+				const auto* currentName = list->GetDisplayName(a_staff);
+				g_spike.originalName = currentName ? currentName : "";
+				EnsureUniqueId(a_player, a_staff, list);
 			}
+			SetSpikeName(list, a_staff, spell);
 			if (!step.attachToItem) {
 				if (list->HasType(RE::ExtraDataType::kEnchantment)) {
 					list->RemoveByType(RE::ExtraDataType::kEnchantment);
@@ -493,6 +567,73 @@ namespace scssc::testcontrols
 			}
 		};
 		KeySink g_sink;
+
+		class IdentitySink :
+			public RE::BSTEventSink<RE::TESEquipEvent>,
+			public RE::BSTEventSink<RE::TESUniqueIDChangeEvent>
+		{
+		public:
+			RE::BSEventNotifyControl ProcessEvent(const RE::TESEquipEvent* a_event, RE::BSTEventSource<RE::TESEquipEvent>*) override
+			{
+				if (!a_event || !a_event->equipped || !a_event->actor || !a_event->actor->IsPlayerRef()) {
+					return RE::BSEventNotifyControl::kContinue;
+				}
+				// The worn flag is set after this event, so the inventory is read one task later.
+				const auto baseObject = a_event->baseObject;
+				if (auto* tasks = SKSE::GetTaskInterface()) {
+					tasks->AddTask([baseObject] {
+						auto* player = RE::PlayerCharacter::GetSingleton();
+						auto* staff = RE::TESForm::LookupByID<RE::TESObjectWEAP>(baseObject);
+						if (player && staff && staff->IsStaff()) {
+							LogStaffIdentity(player, staff, "equip");
+						}
+					});
+				}
+				return RE::BSEventNotifyControl::kContinue;
+			}
+
+			RE::BSEventNotifyControl ProcessEvent(const RE::TESUniqueIDChangeEvent* a_event, RE::BSTEventSource<RE::TESUniqueIDChangeEvent>*) override
+			{
+				if (a_event) {
+					logger::info("SPIKE unique id event: object={:08X} ({:08X},{}) -> ({:08X},{})", a_event->objectID, a_event->oldBaseID, a_event->oldUniqueID,
+						a_event->newBaseID, a_event->newUniqueID);
+				}
+				return RE::BSEventNotifyControl::kContinue;
+			}
+		};
+		IdentitySink g_identitySink;
+	}
+
+	void LogSaveState(const char* a_when)
+	{
+		auto* player = RE::PlayerCharacter::GetSingleton();
+		if (!Enabled() || !player) {
+			return;
+		}
+		const auto* slot = player->GetActorRuntimeData().selectedSpells[RE::Actor::SlotTypes::kRightHand];
+		const auto* caster = RightHandCaster(player);
+		const auto* cast = caster ? caster->currentSpell : nullptr;
+		logger::info("SPIKE state [{}] slot={:08X} '{}' casterSpell={:08X}", a_when, slot ? slot->GetFormID() : 0u, slot ? slot->GetName() : "", cast ? cast->GetFormID() : 0u);
+		std::size_t total = 0;
+		std::size_t dynamicSpells = 0;
+		if (auto* target = player->AsMagicTarget(); auto* effects = target ? target->GetActiveEffectList() : nullptr) {
+			for (const auto* effect : *effects) {
+				if (!effect) {
+					continue;
+				}
+				++total;
+				if (effect->spell && effect->spell->IsDynamicForm()) {
+					++dynamicSpells;
+					logger::info("SPIKE state [{}] active effect: spell={:08X} elapsed={:.1f} duration={:.1f} magnitude={:.1f}", a_when, effect->spell->GetFormID(),
+						effect->elapsedSeconds, effect->duration, effect->magnitude);
+				}
+			}
+		}
+		logger::info("SPIKE state [{}] active effects total={} from runtime spells={}", a_when, total, dynamicSpells);
+		auto* weapon = player->GetEquippedObject(false);
+		if (auto* staff = weapon ? weapon->As<RE::TESObjectWEAP>() : nullptr; staff && staff->IsStaff()) {
+			LogStaffIdentity(player, staff, a_when);
+		}
 	}
 
 	void Install()
@@ -503,6 +644,10 @@ namespace scssc::testcontrols
 		if (auto* devices = RE::BSInputDeviceManager::GetSingleton()) {
 			devices->AddEventSink(&g_sink);
 			logger::warn("TEST CONTROLS ON (F9 bind, F10 right attack, F11 left attack); development builds only");
+		}
+		if (auto* holder = RE::ScriptEventSourceHolder::GetSingleton()) {
+			holder->AddEventSink<RE::TESEquipEvent>(&g_identitySink);
+			holder->AddEventSink<RE::TESUniqueIDChangeEvent>(&g_identitySink);
 		}
 		InstallResourceHook();
 	}

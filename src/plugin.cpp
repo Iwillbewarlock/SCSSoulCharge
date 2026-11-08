@@ -27,7 +27,8 @@ namespace
 			return;
 		}
 		*path /= "SCSSoulCharge.log";
-		auto sink = std::make_shared<spdlog::sinks::basic_file_sink_mt>(path->string(), true);
+		// Appends: the save test compares what one game session saved with what the next one loaded.
+		auto sink = std::make_shared<spdlog::sinks::basic_file_sink_mt>(path->string(), false);
 		auto log = std::make_shared<spdlog::logger>("global", std::move(sink));
 		log->set_level(spdlog::level::info);
 		log->flush_on(spdlog::level::info);
@@ -100,6 +101,10 @@ SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
 			case SKSE::MessagingInterface::kPostLoadGame:
 				scssc::staff_art::Install();  // after SCS hooked the same menu call at its kDataLoaded
 				scssc::serialization::OnPostLoad(a_msg->data != nullptr);
+				scssc::testcontrols::LogSaveState("post-load");
+				break;
+			case SKSE::MessagingInterface::kSaveGame:
+				scssc::testcontrols::LogSaveState("save");
 				break;
 			case SKSE::MessagingInterface::kNewGame:
 				scssc::testcontrols::ResetSpike();

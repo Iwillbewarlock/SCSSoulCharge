@@ -15,4 +15,5 @@ namespace scssc::testcontrols
 	void Install();                // input sink; call at kDataLoaded
 	void ResetSpike();             // forget the spike's item and step; call when a save starts loading or a new game starts
 	void OnFrame(float a_delta);  // drives a running attack hold; called from the frame hook
+	void LogSaveState(const char* a_when);  // what the hand slot and active effects reference; call at kSaveGame and kPostLoadGame
 }
