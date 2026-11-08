@@ -7,10 +7,12 @@
 //         when the magic menu equips a spell (SCS MenuEquipHook.cpp: call at 37952/38908 + 0xD7)
 //   F10 = one right-hand attack: press, hold for iTestHoldMs, release ("Right Attack/Block" button events)
 //   F11 = same for the left hand
+//   F9 on an enchanted staff we do not convert = next step of the enchantment-copy spike (testcontrols.cpp)
 // Nothing here runs in a normal game.
 
 namespace scssc::testcontrols
 {
 	void Install();                // input sink; call at kDataLoaded
+	void ResetSpike();             // forget the spike's item and step; call when a save starts loading or a new game starts
 	void OnFrame(float a_delta);  // drives a running attack hold; called from the frame hook
 }

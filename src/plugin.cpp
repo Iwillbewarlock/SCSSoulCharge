@@ -50,7 +50,7 @@ SKSEPluginInfo(
 SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
 {
 	InitLogging();
-	SKSE::Init(a_skse, { .log = false, .trampoline = true, .trampolineSize = 64 });
+	SKSE::Init(a_skse, { .log = false, .trampoline = true, .trampolineSize = 128 });
 
 	const auto runtime = REL::Module::get().version();
 	logger::info("SCSSoulCharge v0.1.0 loading on runtime {}", runtime.string("."sv));
@@ -94,11 +94,15 @@ SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
 					scssc::testcontrols::Install();
 					break;
 				}
+			case SKSE::MessagingInterface::kPreLoadGame:
+				scssc::testcontrols::ResetSpike();
+				break;
 			case SKSE::MessagingInterface::kPostLoadGame:
 				scssc::staff_art::Install();  // after SCS hooked the same menu call at its kDataLoaded
 				scssc::serialization::OnPostLoad(a_msg->data != nullptr);
 				break;
 			case SKSE::MessagingInterface::kNewGame:
+				scssc::testcontrols::ResetSpike();
 				scssc::staff_art::Install();
 				scssc::serialization::OnNewGame();
 				break;
