@@ -5,6 +5,7 @@
 #include "conversion.h"
 #include "pool.h"
 #include "selftest.h"
+#include "testcontrols.h"
 #include "watch.h"
 
 namespace scssc::serialization
@@ -32,6 +33,7 @@ namespace scssc::serialization
 
 		void OnSave(SKSE::SerializationInterface* a_intfc)
 		{
+			testcontrols::WriteSaveRecord(a_intfc);  // test builds only
 			if (conversion::IsBlocked()) {
 				const std::uint8_t flag = 1;
 				a_intfc->WriteRecord(kBlockedRecord, kBlockedRecordVersion, flag);
@@ -56,6 +58,7 @@ namespace scssc::serialization
 			pool::Clear();
 			g_loadState = LoadState::kNone;
 			g_rawPool.clear();
+			testcontrols::RevertSaveRecord();
 		}
 
 		void OnLoad(SKSE::SerializationInterface* a_intfc)
@@ -67,6 +70,10 @@ namespace scssc::serialization
 			while (a_intfc->GetNextRecordInfo(type, version, length)) {
 				if (type == kBlockedRecord) {
 					blocked = true;
+					continue;
+				}
+				if (type == testcontrols::kColdSaveRecord) {
+					testcontrols::ReadSaveRecord(a_intfc, version, length);
 					continue;
 				}
 				if (type != kPoolRecord) {

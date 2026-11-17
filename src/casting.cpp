@@ -138,6 +138,7 @@ namespace scssc::casting
 					NoticeEmpty();
 					return;
 				}
+				conversion::LogHandSlots(player, "concentration start");
 				g_originalCast(a_caster, a_spell, a_noHitEffectArt, a_target, a_effectiveness, a_hostileOnly, a_magnitudeOverride, a_blame);
 				if (OwnsCast(a_caster, spell)) {  // the engine may reject the start (SCS checks the same, Casting.cpp:785, :800-805)
 					g_channel = { true, left, spell, cost };
@@ -200,6 +201,7 @@ namespace scssc::casting
 			}
 			auto* other = a_player->GetMagicCaster(RE::MagicSystem::CastingSource::kOther);
 			if (!OwnsCast(other, g_channel.spell)) {
+				conversion::LogHandSlots(a_player, "concentration ended natively");
 				g_channel = {};  // ended natively (release, SCS stop, interruption)
 				return;
 			}

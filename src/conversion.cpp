@@ -163,6 +163,26 @@ namespace scssc::conversion
 				slot ? slot->GetFormID() : 0u, a_own ? a_own->GetFormID() : 0u);
 		}
 
+		// SelectSharedInHand has no undo, so a hand the staff has left keeps the shared ENCH in its slot. In-game
+		// (2026-11-09 19:09) a staff that passed through the left hand then failed to concentrate from the right.
+		// Hypothesis, not proven: the leftover is the cause. Put back what the hand really holds.
+		void ClearStaleHandSlot(RE::PlayerCharacter* a_player, bool a_left)
+		{
+			const auto* shared = pool::SharedEnchantment();
+			auto&       slot = a_player->GetActorRuntimeData().selectedSpells[a_left ? RE::Actor::SlotTypes::kLeftHand : RE::Actor::SlotTypes::kRightHand];
+			if (!shared || slot != shared) {
+				return;
+			}
+			auto*       held = a_player->GetEquippedObject(a_left);
+			const auto* weapon = held ? held->As<RE::TESObjectWEAP>() : nullptr;
+			if (weapon && weapon->IsStaff()) {
+				return;  // a converted staff, or one of SCS's own whose enchantment really is the shared one
+			}
+			auto* spell = held ? held->As<RE::SpellItem>() : nullptr;
+			slot = spell;
+			logger::info("SELECT {} hand slot cleared: stale shared ENCH -> {:08X}", a_left ? "L" : "R", spell ? spell->GetFormID() : 0u);
+		}
+
 		void ConvertWorn(RE::PlayerCharacter* a_player, RE::TESObjectWEAP* a_weapon, bool a_left)
 		{
 			auto*      shared = pool::SharedEnchantment();
@@ -210,6 +230,8 @@ namespace scssc::conversion
 		void ReleaseUnbackedSpells(RE::PlayerCharacter* a_player)
 		{
 			RestoreRecords(a_player, false);
+			ClearStaleHandSlot(a_player, true);
+			ClearStaleHandSlot(a_player, false);
 			const auto* left = SpellBackedByHand(a_player, true);
 			const auto* right = SpellBackedByHand(a_player, false);
 			for (auto* spell : pool::Spells()) {
@@ -441,6 +463,16 @@ namespace scssc::conversion
 				RE::SendHUDMessage::ShowHUDMessage("Charge spells can only be cast through their staff");
 			}
 		}
+	}
+
+	void LogHandSlots(RE::PlayerCharacter* a_player, std::string_view a_when)
+	{
+		const auto id = [](const RE::TESForm* a_form) { return a_form ? a_form->GetFormID() : 0u; };
+		const auto& slots = a_player->GetActorRuntimeData().selectedSpells;
+		logger::info("SLOTS {}: L selected={:08X} held={:08X} | R selected={:08X} held={:08X} | voice={:08X}", a_when,
+			id(slots[RE::Actor::SlotTypes::kLeftHand]), id(a_player->GetEquippedObject(true)),
+			id(slots[RE::Actor::SlotTypes::kRightHand]), id(a_player->GetEquippedObject(false)),
+			id(slots[RE::Actor::SlotTypes::kPowerOrShout]));
 	}
 
 	bool RestoreItemName(RE::PlayerCharacter* a_player, bool a_left)

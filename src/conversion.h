@@ -24,6 +24,9 @@ namespace scssc::conversion
 	// Unequips charge spells found in a bare hand. Called from equip events, after loads and every frame.
 	void GuardBareHands(RE::PlayerCharacter* a_player);
 
+	// Writes both hands' selected-spell slots and what each hand holds to the log.
+	void LogHandSlots(RE::PlayerCharacter* a_player, std::string_view a_when);
+
 	// The extra list of the item worn in that hand, or nullptr.
 	[[nodiscard]] const RE::ExtraDataList* WornList(RE::PlayerCharacter* a_player, bool a_left);
 

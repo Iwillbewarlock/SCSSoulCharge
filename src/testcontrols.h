@@ -16,4 +16,14 @@ namespace scssc::testcontrols
 	void ResetSpike();             // forget the spike's item and step; call when a save starts loading or a new game starts
 	void OnFrame(float a_delta);  // drives a running attack hold; called from the frame hook
 	void LogSaveState(const char* a_when);  // what the hand slot and active effects reference; call at kSaveGame and kPostLoadGame
+
+	// T-SAVE fix under test: keeps a runtime copy out of the right-hand slot while a save is written (not off the
+	// item in steps 1-3, nor off casts or projectiles in flight), and judges after a real restart whether the
+	// effects the staff produced came back (SELFTEST T-SAVE-COLD).
+	inline constexpr std::uint32_t kColdSaveRecord = 'TSAV';
+	void PrepareSave();  // call at kSaveGame, after LogSaveState
+	void WriteSaveRecord(SKSE::SerializationInterface* a_intfc);
+	void ReadSaveRecord(SKSE::SerializationInterface* a_intfc, std::uint32_t a_version, std::uint32_t a_length);
+	void RevertSaveRecord();
+	void EvaluateColdLoad(bool a_loadSucceeded);  // call at kPostLoadGame
 }
