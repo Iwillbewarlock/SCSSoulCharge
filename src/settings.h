@@ -1,32 +1,24 @@
 #pragma once
 
-#include "core/staff_filter.h"
-
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 namespace scssc
 {
-	// Data/SKSE/Plugins/SCSSoulCharge.ini. Read once at plugin load, before any form is initialised.
+	// Data/SKSE/Plugins/SCSSoulCharge.ini. Read once at plugin load.
 	struct Settings
 	{
-		int  basicTier{ 0 };            // SCS Basic tier keyword given to converted staves (0..5)
-		bool keepStaffNames{ true };    // undo SCS renaming the base staff to the chosen spell
-		bool suspendWhenEmpty{ true };  // hide a staff's charge spell while its charge cannot pay for it
-		bool selfTest{ false };         // write SELFTEST PASS/FAIL lines to the log
-		bool testControls{ false };     // development: F9/F10/F11 test controls (see testcontrols.h)
-		int  testHoldMs{ 1500 };        // how long a test attack holds the button
-		bool includeScripted{ false };  // also convert staves that carry scripts
-		bool onlyListed{ true };        // development: convert only the staves in sInclude
-
-		// "LocalFormID:Plugin.esp" entries, resolved after the plugins are known.
-		std::vector<std::string> includeSpecs;
+		bool selfTest{ false };  // write SELFTEST PASS/FAIL/SKIP lines to the log
+		// Appended to the bound spell's name while its staff is held (staff_mark). Empty = off. UTF-8.
+		std::string staffMarker{ " \xE2\x98\x85" };  // " ★" (U+2605, in the KS X 1001 set Korean game fonts carry; user choice 2026-11-18)
+		// "LocalFormID:Plugin.esp" staves that never take a spell, resolved once the plugins are known.
 		std::vector<std::string> excludeSpecs;
 
 		static Settings& Get();
 		void             Load();
 	};
 
-	// Resolves "C00:SCSSoulCharge.esp" style entries to runtime FormIDs. Unknown entries are logged and skipped.
-	[[nodiscard]] core::StaffFilterSettings ResolveFilterSettings(const Settings& a_settings);
+	// Resolves sExclude entries to runtime FormIDs. Unknown entries are logged and skipped.
+	[[nodiscard]] std::unordered_set<RE::FormID> ResolveExcludedStaves(const Settings& a_settings);
 }

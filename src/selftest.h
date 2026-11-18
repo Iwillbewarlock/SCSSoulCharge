@@ -7,7 +7,4 @@ namespace scssc::selftest
 
 	// A sample that cannot be judged (item gone, cast cancelled): neither PASS nor FAIL.
 	void Skip(std::string_view a_id, std::string_view a_detail);
-
-	// Checks that need only loaded data (T-ORD, T-ESP). Called at kDataLoaded.
-	void RunDataLoaded();
 }

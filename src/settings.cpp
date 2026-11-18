@@ -8,8 +8,7 @@ namespace scssc
 {
 	namespace
 	{
-		constexpr auto kIniPath = L"Data\\SKSE\\Plugins\\SCSSoulCharge.ini";
-		constexpr int  kMaxBasicTier = 5;
+		constexpr auto  kIniPath = L"Data\\SKSE\\Plugins\\SCSSoulCharge.ini";
 		constexpr DWORD kListBufferSize = 8192;
 
 		bool ReadBool(const wchar_t* a_section, const wchar_t* a_key, bool a_default)
@@ -51,7 +50,9 @@ namespace scssc
 			RE::FormID local = 0;
 			try {
 				local = static_cast<RE::FormID>(std::stoul(a_spec.substr(0, colon), nullptr, 16));
-			} catch (const std::exception&) {
+			} catch (const std::invalid_argument&) {
+				return std::nullopt;
+			} catch (const std::out_of_range&) {
 				return std::nullopt;
 			}
 			auto* data = RE::TESDataHandler::GetSingleton();
@@ -71,40 +72,26 @@ namespace scssc
 
 	void Settings::Load()
 	{
-		basicTier = static_cast<int>(::GetPrivateProfileIntW(L"General", L"iBasicTier", 0, kIniPath));
-		if (basicTier < 0 || basicTier > kMaxBasicTier) {
-			logger::warn("iBasicTier={} is outside 0..{}; using 0", basicTier, kMaxBasicTier);
-			basicTier = 0;
-		}
-		keepStaffNames = ReadBool(L"General", L"bKeepStaffNames", true);
-		suspendWhenEmpty = ReadBool(L"General", L"bSuspendEmptyChargeSpells", true);
-		includeScripted = ReadBool(L"Staves", L"bIncludeScriptedStaves", false);
-		onlyListed = ReadBool(L"Staves", L"bOnlyListedStaves", true);
-		includeSpecs = ReadList(L"Staves", L"sInclude");
-		excludeSpecs = ReadList(L"Staves", L"sExclude");
 		selfTest = ReadBool(L"SelfTest", L"bEnabled", false);
-		testControls = ReadBool(L"SelfTest", L"bTestControls", false);
-		testHoldMs = std::clamp(static_cast<int>(::GetPrivateProfileIntW(L"SelfTest", L"iTestHoldMs", 1500, kIniPath)), 100, 5000);
-		logger::info("Settings: iBasicTier={} bKeepStaffNames={} bIncludeScriptedStaves={} bOnlyListedStaves={} include={} exclude={} selfTest={}",
-			basicTier, keepStaffNames, includeScripted, onlyListed, includeSpecs.size(), excludeSpecs.size(), selfTest);
+		if (!ReadBool(L"Display", L"bStaffMarker", true)) {
+			staffMarker.clear();
+		} else if (const auto custom = ReadList(L"Display", L"sStaffMarker"); !custom.empty()) {
+			staffMarker = " " + custom.front();  // the INI cannot hold a leading space: one is put back
+		}
+		excludeSpecs = ReadList(L"Staves", L"sExclude");
+		logger::info("Settings: selfTest={} exclude={} staffMarker='{}'", selfTest, excludeSpecs.size(), staffMarker);
 	}
 
-	core::StaffFilterSettings ResolveFilterSettings(const Settings& a_settings)
+	std::unordered_set<RE::FormID> ResolveExcludedStaves(const Settings& a_settings)
 	{
-		core::StaffFilterSettings out;
-		out.includeScripted = a_settings.includeScripted;
-		out.onlyListed = a_settings.onlyListed;
-		const auto resolveInto = [](const std::vector<std::string>& a_specs, std::unordered_set<std::uint32_t>& a_set, std::string_view a_label) {
-			for (const auto& spec : a_specs) {
-				if (const auto id = ResolveSpec(spec)) {
-					a_set.insert(*id);
-				} else {
-					logger::warn("{} entry '{}' not found (expected LocalFormID:Plugin.esp); ignored", a_label, spec);
-				}
+		std::unordered_set<RE::FormID> out;
+		for (const auto& spec : a_settings.excludeSpecs) {
+			if (const auto id = ResolveSpec(spec)) {
+				out.insert(*id);
+			} else {
+				logger::warn("sExclude entry '{}' not found (expected LocalFormID:Plugin.esp, e.g. 4DED8:Skyrim.esm); ignored", spec);
 			}
-		};
-		resolveInto(a_settings.includeSpecs, out.include, "sInclude");
-		resolveInto(a_settings.excludeSpecs, out.exclude, "sExclude");
+		}
 		return out;
 	}
 }

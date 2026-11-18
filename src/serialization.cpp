@@ -2,63 +2,49 @@
 
 #include "serialization.h"
 
-#include "conversion.h"
-#include "pool.h"
+#include "frame_hook.h"
 #include "selftest.h"
-#include "testcontrols.h"
-#include "watch.h"
+#include "staff_binding.h"
 
 namespace scssc::serialization
 {
 	namespace
 	{
 		constexpr std::uint32_t kUniqueID = 'SCSC';  // SCS itself uses 'SCSF'
-		constexpr std::uint32_t kPoolRecord = 'POOL';
-		constexpr std::uint32_t kPoolRecordVersion = 1;
-		// Written while conversion is blocked, so a later load stays blocked instead of starting a fresh table.
-		constexpr std::uint32_t kBlockedRecord = 'BLCK';
-		constexpr std::uint32_t kBlockedRecordVersion = 1;
-		constexpr std::uint32_t kMaxRecordBytes = 8 + pool::kPoolSize * 8;
+		constexpr std::uint32_t kBindRecord = 'BIND';
+		constexpr std::uint32_t kBindRecordVersion = 1;
+		constexpr std::uint32_t kMaxRecordBytes = 4u << 20;  // far above any real table (about 1.1 KB per binding at most)
 
-		enum class LoadState
+		// While the mod is off (unsupported runtime, a hook missing) the table is still read and written, so one save
+		// made in that state keeps every binding (reviewer 2026-11-17). Resolved, not passed through as raw bytes: SKSE
+		// writes the new save's plugin indices, so raw FormIDs would point at other forms after a load order change
+		// (Codex r2, skse64 InternalSerialization.cpp). Off, nothing else touches the table.
+		std::atomic<bool> g_active{ false };
+
+		void CheckThread(const char* a_where)
 		{
-			kNone,      // no POOL record: save made without this mod (or a new game)
-			kLoaded,
-			kRejected,  // POOL present but unreadable
-			kBlocked,   // the save was made while blocked
-		};
-
-		LoadState                 g_loadState = LoadState::kNone;
-		std::vector<std::uint8_t> g_rawPool;  // the POOL bytes as loaded, re-written unchanged while blocked
+			const auto main = frame_hook::MainThreadId();
+			const auto thread = REX::W32::GetCurrentThreadId();
+			selftest::Report("T-THREAD", main == 0 || thread == main, std::format("{} on thread {} (frame hook {})", a_where, thread, main));
+		}
 
 		void OnSave(SKSE::SerializationInterface* a_intfc)
 		{
-			testcontrols::WriteSaveRecord(a_intfc);  // test builds only
-			if (conversion::IsBlocked()) {
-				const std::uint8_t flag = 1;
-				a_intfc->WriteRecord(kBlockedRecord, kBlockedRecordVersion, flag);
-				if (!g_rawPool.empty()) {
-					a_intfc->WriteRecord(kPoolRecord, kPoolRecordVersion, g_rawPool.data(), static_cast<std::uint32_t>(g_rawPool.size()));
-				}
-				logger::warn("Co-save: saved while blocked (BLCK + original POOL {} bytes)", g_rawPool.size());
+			if (g_active.load()) {
+				CheckThread("co-save write");
+			}
+			const auto& table = staff_binding::TableForSave();
+			const auto  bytes = table.Serialize();
+			if (!a_intfc->WriteRecord(kBindRecord, kBindRecordVersion, bytes.data(), static_cast<std::uint32_t>(bytes.size()))) {
+				logger::error("Co-save: writing BIND ({} bytes) failed; this save keeps no staff bindings", bytes.size());
 				return;
 			}
-			const auto bytes = pool::Table().Serialize();
-			if (!a_intfc->WriteRecord(kPoolRecord, kPoolRecordVersion, bytes.data(), static_cast<std::uint32_t>(bytes.size()))) {
-				logger::error("Co-save: writing POOL ({} bytes) failed", bytes.size());
-				return;
-			}
-			logger::info("Co-save: POOL saved ({} slots)", pool::Table().Used());
+			logger::info("Co-save: BIND saved ({} bindings, {} bytes)", table.Size(), bytes.size());
 		}
 
 		void OnRevert(SKSE::SerializationInterface*)
 		{
-			conversion::SetSettled(false);
-			watch::Reset();
-			pool::Clear();
-			g_loadState = LoadState::kNone;
-			g_rawPool.clear();
-			testcontrols::RevertSaveRecord();
+			staff_binding::Table().Clear();
 		}
 
 		void OnLoad(SKSE::SerializationInterface* a_intfc)
@@ -66,59 +52,43 @@ namespace scssc::serialization
 			std::uint32_t type = 0;
 			std::uint32_t version = 0;
 			std::uint32_t length = 0;
-			bool          blocked = false;
 			while (a_intfc->GetNextRecordInfo(type, version, length)) {
-				if (type == kBlockedRecord) {
-					blocked = true;
+				if (type != kBindRecord) {
+					logger::info("Co-save: record {:08X} from an older test build skipped", type);
 					continue;
 				}
-				if (type == testcontrols::kColdSaveRecord) {
-					testcontrols::ReadSaveRecord(a_intfc, version, length);
+				if (version != kBindRecordVersion || length > kMaxRecordBytes) {
+					logger::error("Co-save: BIND version {} length {} not supported; staff bindings start empty", version, length);
+					selftest::Report("T-SAVE", false, std::format("BIND version {} length {}", version, length));
 					continue;
 				}
-				if (type != kPoolRecord) {
-					logger::warn("Co-save: unknown record {:08X} skipped", type);
+				std::vector<std::uint8_t> raw(length);
+				if (a_intfc->ReadRecordData(raw.data(), length) != length) {
+					logger::error("Co-save: BIND truncated; staff bindings start empty");
+					selftest::Report("T-SAVE", false, "BIND truncated");
 					continue;
 				}
-				if (version != kPoolRecordVersion || length > kMaxRecordBytes) {
-					logger::error("Co-save: POOL version {} length {} not supported", version, length);
-					g_loadState = LoadState::kRejected;
-					continue;
+				if (g_active.load()) {
+					CheckThread("co-save read");
 				}
-				g_rawPool.assign(length, 0);
-				if (a_intfc->ReadRecordData(g_rawPool.data(), length) != length) {
-					logger::error("Co-save: POOL truncated");
-					g_loadState = LoadState::kRejected;
-					continue;
-				}
-				const bool ok = pool::Table().Deserialize(g_rawPool, [a_intfc](core::FormID a_saved) -> std::optional<core::FormID> {
-					RE::FormID current = 0;
-					if (!a_intfc->ResolveFormID(a_saved, current)) {
-						return std::nullopt;
-					}
-					return current;
-				});
-				g_loadState = ok ? LoadState::kLoaded : LoadState::kRejected;
-				logger::info("Co-save: POOL {} ({} slots)", ok ? "loaded" : "REJECTED", pool::Table().Used());
+				std::size_t dropped = 0;
+				std::size_t orphaned = 0;
+				auto&       table = staff_binding::Table();
+				const bool  ok = table.Deserialize(
+                    raw,
+                    [a_intfc](core::FormID a_saved) -> std::optional<core::FormID> {
+                        RE::FormID current = 0;
+                        if (!a_intfc->ResolveFormID(a_saved, current)) {
+                            return std::nullopt;
+                        }
+                        return current;
+                    },
+                    &dropped, &orphaned);
+				logger::info("Co-save: BIND {} ({} bindings, {} dropped with their staff's plugin, {} whose spell's plugin is gone)", ok ? "loaded" : "REJECTED",
+					table.Size(), dropped, orphaned);
+				selftest::Report("T-SAVE", ok, std::format("bindings={} dropped={} orphaned={}", table.Size(), dropped, orphaned));
+				staff_binding::OnLoaded(ok ? table.Size() : 0);
 			}
-			if (blocked) {
-				g_loadState = LoadState::kBlocked;
-			}
-		}
-
-		std::string_view StateName(LoadState a_state)
-		{
-			switch (a_state) {
-			case LoadState::kNone:
-				return "none";
-			case LoadState::kLoaded:
-				return "loaded";
-			case LoadState::kRejected:
-				return "rejected";
-			case LoadState::kBlocked:
-				return "blocked";
-			}
-			return "?";
 		}
 	}
 
@@ -126,7 +96,7 @@ namespace scssc::serialization
 	{
 		auto* serial = SKSE::GetSerializationInterface();
 		if (!serial) {
-			logger::critical("SKSE serialization interface unavailable");
+			logger::critical("SKSE serialization interface unavailable; staff bindings are not saved");
 			return;
 		}
 		serial->SetUniqueID(kUniqueID);
@@ -135,36 +105,8 @@ namespace scssc::serialization
 		serial->SetRevertCallback(OnRevert);
 	}
 
-	void OnPostLoad(bool a_loadSucceeded)
+	void SetActive(bool a_active)
 	{
-		if (!pool::IsReady()) {
-			return;
-		}
-		if (!a_loadSucceeded) {
-			logger::warn("kPostLoadGame reported a failed load; nothing reconciled");
-			return;
-		}
-		// A missing table is only safe when the player knows no charge spell: otherwise SCS may still
-		// remember staff -> slot bindings that a fresh table would hand to other enchantments.
-		const bool knowsPoolSpell = pool::PlayerKnowsAnyPoolSpell();
-		const bool block = g_loadState == LoadState::kRejected || g_loadState == LoadState::kBlocked ||
-		                   (g_loadState == LoadState::kNone && knowsPoolSpell);
-		if (block) {
-			pool::Table().Clear();
-			conversion::SetBlocked(true, std::format("co-save state {}, player knows charge spells: {}", StateName(g_loadState), knowsPoolSpell));
-		} else {
-			conversion::SetBlocked(false, "co-save ok");
-			pool::RefillFromTable();
-		}
-		conversion::SetSettled(true);
-		conversion::ReconcilePlayer();
-		selftest::Report("T-SAVE", !block, std::format("state={} slots={} knowsPoolSpell={} blocked={}", StateName(g_loadState),
-											   pool::Table().Used(), knowsPoolSpell, block));
-	}
-
-	void OnNewGame()
-	{
-		conversion::SetBlocked(false, "new game");
-		conversion::SetSettled(true);
+		g_active = a_active;
 	}
 }

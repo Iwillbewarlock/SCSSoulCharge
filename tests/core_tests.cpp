@@ -1,7 +1,6 @@
 // Offline tests for the game-independent rules. Exit code 0 = all passed.
-#include "core/charge_rules.h"
-#include "core/pool_table.h"
-#include "core/staff_filter.h"
+#include "core/bindings.h"
+#include "core/spell_rules.h"
 
 #include <cmath>
 #include <cstdio>
@@ -22,118 +21,138 @@ namespace
 		}
 	}
 
-	bool Near(float a, float b) { return std::fabs(a - b) < 1e-4f; }
-
-	void ChargeRules()
+	void BindingTableTests()
 	{
 		using namespace scssc::core;
-		const float nan = std::numeric_limits<float>::quiet_NaN();
-		// fire-and-forget
-		Check(AllowFireAndForget(50.0f, 36.5f), "F&F allowed with enough charge");
-		Check(AllowFireAndForget(36.5f, 36.5f), "F&F allowed at exactly the cost (boundary)");
-		Check(!AllowFireAndForget(36.0f, 36.5f), "F&F refused below the cost");
-		Check(!AllowFireAndForget(nan, 1.0f) && !AllowFireAndForget(10.0f, -1.0f), "F&F refused on invalid numbers");
-		Check(Near(FireAndForgetDebit(36.5f, false), 36.5f), "F&F debit is the cost");
-		Check(FireAndForgetDebit(36.5f, true) == 0.0f, "failed target-location cast costs nothing");
-		// concentration start
-		Check(AllowConcentrationStart(5.0f, 20.0f), "concentration starts with a little charge (per-second cost)");
-		Check(!AllowConcentrationStart(0.0f, 20.0f), "concentration refused at zero charge");
-		Check(AllowConcentrationStart(0.0f, 0.0f), "free concentration always starts");
-		// concentration tick
-		auto t = ConcentrationTick(100.0f, 20.0f, 0.1f);
-		Check(Near(t.debit, 2.0f) && !t.interrupt, "tick bills cost x dt");
-		t = ConcentrationTick(1.0f, 20.0f, 0.1f);
-		Check(Near(t.debit, 1.0f) && t.interrupt, "tick never bills more than what is left, then stops");
-		t = ConcentrationTick(100.0f, 20.0f, 0.3f);
-		Check(t.debit == 0.0f && !t.interrupt, "large frame gap skips billing and keeps the channel");
-		t = ConcentrationTick(100.0f, 20.0f, nan);
-		Check(t.debit == 0.0f && t.interrupt, "invalid dt stops without billing");
-	}
+		const StaffKey a{ 0x4C6CA, 0x14, 3 };
+		const StaffKey b{ 0x4C6CA, 0x14, 4 };  // same record, another item
+		const NameState plain{ false, "Staff of Firebolts", "Staff of Firebolts [Ice Spike]" };
 
-	void PoolTableTests()
-	{
-		using namespace scssc::core;
-		PoolTable table(3);
-		Check(table.Assign(0x100) == 0u, "first enchantment gets slot 0");
-		Check(table.Assign(0x200) == 1u, "second enchantment gets slot 1");
-		Check(table.Assign(0x100) == 0u, "same enchantment keeps its slot");
-		Check(table.Assign(0x300) == 2u, "third fills the pool");
-		Check(!table.Assign(0x400).has_value(), "full pool refuses a new enchantment (no reuse)");
-		Check(!table.Assign(0).has_value(), "FormID 0 is never assigned");
+		BindingTable table;
+		Check(table.Toggle(a, 0x2B96C, plain) == ToggleResult::kAssigned, "first pick assigns");
+		Check(table.Find(b) == nullptr, "another item of the same record stays unbound");
+		Check(table.Toggle(a, 0x12FD0, {}) == ToggleResult::kChanged && table.Find(a)->spell == 0x12FD0, "another spell replaces");
+		Check(table.Find(a)->name.original == "Staff of Firebolts", "a change keeps the name state of the first pick");
+		Check(table.Toggle(a, 0x12FD0, {}) == ToggleResult::kCleared && table.Find(a) == nullptr, "same spell again clears");
 
-		// round trip with a changed load order and one removed enchantment
+		// unique id moves
+		(void)table.Toggle(a, 0x2B96C, plain);
+		(void)table.Toggle(b, 0x12FD0, plain);
+		Check(table.Move(a, b) && table.Size() == 1 && table.Find(b)->spell == 0x2B96C, "move replaces the binding at the new id");
+		Check(!table.Move(a, b), "move from an unbound id reports false (failure)");
+		Check(table.Move(b, b) && table.Size() == 1, "move onto itself keeps the binding (boundary)");
+
+		// save round trip, with one form gone
+		table.Clear();
+		(void)table.Toggle(a, 0x2B96C, plain);
+		(void)table.Toggle(b, 0x0DEAD, NameState{ true, "My staff", "My staff [Gone]" });
 		const auto bytes = table.Serialize();
-		const std::map<FormID, FormID> moved{ { 0x100, 0x1100 }, { 0x300, 0x3300 } };  // 0x200 is gone
-		PoolTable loaded(3);
-		const bool ok = loaded.Deserialize(bytes, [&](FormID a_id) -> std::optional<FormID> {
-			const auto it = moved.find(a_id);
-			return it == moved.end() ? std::nullopt : std::optional<FormID>(it->second);
-		});
-		Check(ok, "round trip succeeds");
-		Check(loaded.Find(0x1100) == 0u && loaded.Find(0x3300) == 2u, "resolved FormIDs keep their slots");
-		Check(!loaded.EnchantmentAt(1).has_value() && loaded.Used() == 3, "vanished enchantment keeps its slot reserved");
-		Check(!loaded.Assign(0x500).has_value(), "reserved slot is not reused");
+		BindingTable loaded;
+		std::size_t  dropped = 9;
+		std::size_t  orphaned = 9;
+		const auto   resolve = [](FormID id) -> std::optional<FormID> {
+			if (id == 0x0DEAD) {
+				return std::nullopt;
+			}
+			return id == 0x4C6CA ? 0x0104C6CA : id;  // the staff moved in the load order
+		};
+		Check(loaded.Deserialize(bytes, resolve, &dropped, &orphaned), "round trip loads");
+		Check(loaded.Size() == 2 && dropped == 0 && orphaned == 1, "binding with a missing spell is kept as an orphan and counted");
+		const auto* orphan = loaded.Find(StaffKey{ 0x0104C6CA, 0x14, 4 });
+		Check(orphan && orphan->spell == 0 && orphan->name.written == "My staff [Gone]", "orphan keeps the name state for restoring");
+		Check(orphan && DecideRestore(orphan->name, "My staff [Gone]") == NameRestore::kRestoreOriginal, "orphan suffix can still be taken off");
+		{
+			BindingTable gone;
+			const auto   noStaff = [](FormID id) -> std::optional<FormID> {
+				return id == 0x4C6CA ? std::nullopt : std::optional<FormID>{ id };
+			};
+			Check(gone.Deserialize(bytes, noStaff, &dropped) && gone.Size() == 0 && dropped == 2, "binding with a missing staff is dropped");
+		}
+		const auto* kept = loaded.Find(StaffKey{ 0x0104C6CA, 0x14, 3 });
+		Check(kept && kept->spell == 0x2B96C && kept->name.written == plain.written && !kept->name.hadOverride, "resolved staff key and name state survive");
 
 		// malformed data
-		auto bad = bytes;
-		bad.pop_back();
-		Check(!loaded.Deserialize(bad, [](FormID a) { return std::optional<FormID>(a); }) && loaded.Used() == 0,
-			"truncated data is refused and leaves the table empty");
-		auto dup = bytes;
-		dup[12] = 0;  // first entry's slot (bytes 12..15) -> 0, clashing with nothing; make second entry slot 0 too
-		dup[20] = 0;
-		Check(!loaded.Deserialize(dup, [](FormID a) { return std::optional<FormID>(a); }), "duplicate slot numbers are refused");
-		PoolTable small(2);
-		Check(!small.Deserialize(bytes, [](FormID a) { return std::optional<FormID>(a); }), "more entries than capacity are refused");
-		auto twice = bytes;
-		twice[16] = twice[8];  // second entry's enchantment = first entry's
-		twice[17] = twice[9];
-		twice[18] = twice[10];
-		twice[19] = twice[11];
-		Check(!loaded.Deserialize(twice, [](FormID a) { return std::optional<FormID>(a); }), "one enchantment in two slots is refused");
-	}
+		auto truncated = bytes;
+		truncated.pop_back();
+		Check(!loaded.Deserialize(truncated, resolve) && loaded.Size() == 0, "truncated data is refused and leaves the table empty");
+		auto trailing = bytes;
+		trailing.push_back(0);
+		Check(!loaded.Deserialize(trailing, resolve), "trailing bytes are refused");
+		auto badVersion = bytes;
+		badVersion[0] = 9;
+		Check(!loaded.Deserialize(badVersion, resolve), "unknown format version is refused");
+		std::vector<std::uint8_t> hugeName = { 1, 0, 0, 0, 1, 0, 0, 0 };
+		for (int i = 0; i < 18; ++i) {
+			hugeName.push_back(0);  // staff, uidBase, uid, spell, flags
+		}
+		hugeName.push_back(0xFF);
+		hugeName.push_back(0xFF);  // name length 65535 > limit
+		Check(!loaded.Deserialize(hugeName, resolve), "over-long saved name is refused");
+		Check(loaded.Deserialize(std::vector<std::uint8_t>{ 1, 0, 0, 0, 0, 0, 0, 0 }, resolve) && loaded.Size() == 0, "empty table loads (boundary)");
 
-	void StaffFilterTests()
+		// names
+		Check(ComposeName("Staff of Firebolts", "Ice Spike") == "Staff of Firebolts [Ice Spike]", "name gets the spell in brackets");
+		Check(SpellNameForStaff("Ice Spike (Learning - 35%)") == "Ice Spike", "a progress note is left out of the staff name");
+		Check(SpellNameForStaff("Ice Spike") == "Ice Spike", "a plain name stays (boundary)");
+		Check(SpellNameForStaff("Conjure (Familiar)") == "Conjure (Familiar)", "parentheses without a percentage stay");
+		Check(SpellNameForStaff("(50%)") == "(50%)", "a name that is only the note stays (failure guard)");
+		Check(DecideRestore(plain, plain.written) == NameRestore::kRemoveOverride, "our name on an item without its own name is removed");
+		Check(DecideRestore(NameState{ true, "My staff", "My staff [X]" }, "My staff [X]") == NameRestore::kRestoreOriginal, "own name comes back");
+		Check(DecideRestore(plain, "Renamed by player") == NameRestore::kLeave, "a later rename is kept");
+		Check(DecideRestore(NameState{ false, "Staff", "" }, "Staff") == NameRestore::kLeave, "nothing written, nothing restored (boundary)");
+		const auto rebased = Rebase(plain, "Renamed by player");
+		Check(rebased.hadOverride && rebased.original == "Renamed by player" && rebased.written.empty(), "a later rename becomes the new original");
+		Check(Rebase(plain, plain.written).original == plain.original, "our own name keeps the original");
+	}
+	void SpellRuleTests()
 	{
 		using namespace scssc::core;
-		StaffFilterSettings settings;
-		StaffFacts          staff{ 0xABC, true, true, 60.0f, false, false };
-		Check(ClassifyStaff(staff, settings) == StaffVerdict::kEligible, "ordinary enchanted staff is eligible");
-
-		auto s = staff;
-		s.isStaffAnimation = false;
-		Check(ClassifyStaff(s, settings) == StaffVerdict::kNotStaff, "non-staff weapon is skipped");
-		s = staff;
-		s.hasEnchantment = false;
-		Check(ClassifyStaff(s, settings) == StaffVerdict::kNoEnchantment, "staff without enchantment is skipped");
-		s = staff;
-		s.enchantmentCost = 0.0f;
-		Check(ClassifyStaff(s, settings) == StaffVerdict::kZeroCost, "zero-cost enchantment is skipped (boundary)");
-		s = staff;
-		s.hasScsKeyword = true;
-		Check(ClassifyStaff(s, settings) == StaffVerdict::kAlreadyScs, "SCS staff is never touched");
-		s = staff;
-		s.hasScript = true;
-		Check(ClassifyStaff(s, settings) == StaffVerdict::kScripted, "scripted staff is excluded by default");
-		settings.include.insert(0xABC);
-		Check(ClassifyStaff(s, settings) == StaffVerdict::kEligible, "include list overrides the script exclusion");
-		settings.exclude.insert(0xABC);
-		Check(ClassifyStaff(s, settings) == StaffVerdict::kExcluded, "exclude list wins over include list");
-		StaffFilterSettings testOnly;
-		testOnly.onlyListed = true;
-		Check(ClassifyStaff(staff, testOnly) == StaffVerdict::kNotListed, "test mode skips unlisted staves");
-		s = staff;
-		s.hasScsKeyword = true;
-		testOnly.include.insert(0xABC);
-		Check(ClassifyStaff(s, testOnly) == StaffVerdict::kAlreadyScs, "include list cannot convert an SCS staff");
+		SpellTraits firebolt;
+		firebolt.isPlainSpell = true;
+		firebolt.known = true;
+		firebolt.fireAndForget = true;
+		firebolt.hasEffects = true;
+		Check(ClassifyForStaff(firebolt, false) == BindVerdict::kAllowed, "a known fire-and-forget spell is allowed");
+		auto flames = firebolt;
+		flames.fireAndForget = false;
+		flames.concentration = true;
+		Check(ClassifyForStaff(flames, false) == BindVerdict::kAllowed, "a concentration spell is allowed");
+		auto summon = firebolt;
+		summon.range = 0.01f;
+		Check(ClassifyForStaff(summon, false) == BindVerdict::kRange, "any range above zero is refused (boundary)");
+		auto oakflesh = firebolt;
+		oakflesh.selfDelivery = true;
+		oakflesh.noAbsorb = true;
+		Check(ClassifyForStaff(oakflesh, false) == BindVerdict::kAllowed, "no-absorb on a self spell is allowed");
+		auto drain = firebolt;
+		drain.noAbsorb = true;
+		Check(ClassifyForStaff(drain, false) == BindVerdict::kNoAbsorb, "no-absorb on an aimed spell is refused");
+		auto power = firebolt;
+		power.isPlainSpell = false;
+		Check(ClassifyForStaff(power, false) == BindVerdict::kNotASpell, "powers are refused");
+		auto unknown = firebolt;
+		unknown.known = false;
+		Check(ClassifyForStaff(unknown, false) == BindVerdict::kNotKnown, "an unknown spell is refused");
+		auto ability = firebolt;
+		ability.fireAndForget = false;
+		Check(ClassifyForStaff(ability, false) == BindVerdict::kCastingType, "constant effect is refused");
+		auto ignore = firebolt;
+		ignore.ignoreResistance = true;
+		Check(ClassifyForStaff(ignore, false) == BindVerdict::kIgnoreResistance, "ignore-resistance is refused");
+		Check(std::string_view(Describe(BindVerdict::kRange)).size() > 0, "every verdict has a description");
+		Check(ClassifyForStaff(summon, true) == BindVerdict::kAllowed, "with the copy keeping spell values a ranged spell is allowed");
+		Check(ClassifyForStaff(ignore, true) == BindVerdict::kAllowed && ClassifyForStaff(drain, true) == BindVerdict::kAllowed,
+			"with the copy keeping spell values the flags no longer rule a spell out");
+		Check(ClassifyForStaff(power, true) == BindVerdict::kNotASpell && ClassifyForStaff(unknown, true) == BindVerdict::kNotKnown &&
+				  ClassifyForStaff(ability, true) == BindVerdict::kCastingType,
+			"spell type, knowledge and casting type still rule a spell out (failure guard)");
 	}
 }
 
 int main()
 {
-	ChargeRules();
-	PoolTableTests();
-	StaffFilterTests();
+	BindingTableTests();
+	SpellRuleTests();
 	std::printf("core_tests: %d checks, %d failures\n", g_checks, g_failures);
 	return g_failures == 0 ? 0 : 1;
 }

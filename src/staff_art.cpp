@@ -1,166 +1,276 @@
-#include "PCH.h"
-
 #include "staff_art.h"
 
-#include "keywords.h"
-#include "pool.h"
-
-#include <cstring>
+#include "hand_slot.h"
+#include "selftest.h"
+#include "spell_copy.h"
 
 namespace scssc::staff_art
 {
 	namespace
 	{
-		constexpr RE::FormID kRightHandSlot = 0x13F42;
-		constexpr RE::FormID kLeftHandSlot = 0x13F43;
+		using DetachArtFn = void (*)(RE::ActorMagicCaster*, bool);
+		using SetCastingArtFn = void (*)(RE::ActorMagicCaster*, RE::BGSArtObject*);
+		DetachArtFn     g_detach = nullptr;
+		SetCastingArtFn g_setArt = nullptr;
 
-		using MenuEquipFn = void (*)(RE::ActorEquipManager*, RE::Actor*, RE::SpellItem*, RE::BGSEquipSlot**);
-		MenuEquipFn g_previousMenuEquip = nullptr;
+		constexpr float kCheckSecs = 3.0f;      // the 2026-11-17 refreshes attached within 0.13 s
+		constexpr float kDrawGraceSecs = 0.5f;  // after a draw, how long the engine gets to attach the art by itself
 
-		struct Original
+		// Why a refresh is (or was) waiting, so each case gets its own self-test id.
+		enum class Wait
 		{
-			bool                     captured{ false };
-			RE::EffectSetting*       effect{ nullptr };  // SCS's dummy effect on the shared enchantment
-			RE::BGSArtObject*        castingArt{ nullptr };
-			RE::TESObjectLIGH*       light{ nullptr };
-			RE::BGSArtObject*        enchantArt{ nullptr };
-			RE::TESEffectShader*     enchantShader{ nullptr };
-			RE::BGSReferenceEffect*  enchantVisuals{ nullptr };
+			kNone,
+			kSheathed,  // T-ART-SHEATHED: the slot changed while the staff was put away
+			kCasting,   // T-ART-MIDCAST: the slot changed during a cast
 		};
-		Original                g_original;
-		const RE::EffectSetting* g_applied = nullptr;  // effect whose art is currently shown, nullptr = SCS's own
 
-		bool CaptureOriginal()
+		struct State
 		{
-			if (g_original.captured) {
-				return g_original.effect != nullptr;
+			const RE::MagicItem* shownFor{ nullptr };  // the slot item whose art we last attached; null = unknown
+			bool                 wasDrawn{ false };
+			bool                 drawPending{ false };  // drawn since the last refresh while a copy is in the slot
+			std::uint32_t        slotWrites{ 0 };       // hand_slot::Writes() at the last refresh
+			float                drawAt{ 0.0f };
+			std::uint32_t        drawWrites{ 0 };  // hand_slot::Writes() at the draw: the engine's art is for that slot item
+			bool                 fresh{ true };    // first frame after a reset: take the weapon state as it is
+			Wait                 wait{ Wait::kNone };
+			float                clock{ 0.0f };
+			// self-test window after a refresh
+			const char*          checkId{ nullptr };
+			float                checkStart{ 0.0f };
+			RE::FormID           checkArt{ 0 };
+		};
+		State g_state;
+
+		RE::ActorMagicCaster* RightCaster(RE::PlayerCharacter* a_player)
+		{
+			auto* caster = a_player->GetMagicCaster(RE::MagicSystem::CastingSource::kRightHand);
+			return caster ? static_cast<RE::ActorMagicCaster*>(caster) : nullptr;
+		}
+
+		// Node names inside known hand-art models (houseCARL, 2026-11-16), the same check the test build passed 9/9 with:
+		// the engine renames the attached root 'MagicRight', so the model is told apart by a child node.
+		constexpr std::array<std::pair<std::string_view, std::string_view>, 4> kMarkers{ {
+			{ "fireball01handeffects", "pFireballCore04" },
+			{ "frostbolthandfx01", "pSmallSnow03" },
+			{ "frosthandfx01", "pSmallSnow03" },
+			{ "shieldspellhand01", "BigCube01" },
+		} };
+		constexpr int kMarkerDepth = 4;
+
+		std::string_view MarkerFor(const RE::BGSArtObject* a_art)
+		{
+			const char* model = a_art ? a_art->GetModel() : nullptr;
+			if (!model) {
+				return {};
 			}
-			g_original.captured = true;
-			auto* shared = pool::SharedEnchantment();
-			if (!shared || shared->effects.empty() || !shared->effects[0] || !shared->effects[0]->baseEffect) {
-				logger::warn("Staff art: SCS shared enchantment has no effect; tip art stays as is");
+			std::string stem{ model };
+			if (const auto slash = stem.find_last_of("\\/"); slash != std::string::npos) {
+				stem.erase(0, slash + 1);
+			}
+			if (const auto dot = stem.rfind('.'); dot != std::string::npos) {
+				stem.erase(dot);
+			}
+			std::ranges::transform(stem, stem.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+			for (const auto& [name, marker] : kMarkers) {
+				if (stem == name) {
+					return marker;
+				}
+			}
+			return {};
+		}
+
+		bool HasNamedNode(RE::NiAVObject* a_object, std::string_view a_name, int a_depth)
+		{
+			if (!a_object) {
 				return false;
 			}
-			auto* effect = shared->effects[0]->baseEffect;
-			g_original = { true, effect, effect->data.castingArt, effect->data.light, effect->data.enchantEffectArt,
-				effect->data.enchantShader, effect->data.enchantVisuals };
-			return true;
-		}
-
-		bool HoldsConvertedStaff(RE::PlayerCharacter* a_player, bool a_left)
-		{
-			auto* weapon = a_player->GetEquippedObject(a_left);
-			return weapon && keywords::IsConverted(weapon->GetFormID());
-		}
-
-		// The hand caster keeps the casting art it picked when the spell was selected; give it the new one.
-		void RefreshCastingArt(RE::PlayerCharacter* a_player, RE::BGSArtObject* a_art)
-		{
-			for (const bool left : { true, false }) {
-				if (!HoldsConvertedStaff(a_player, left)) {
-					continue;
-				}
-				auto* caster = a_player->GetMagicCaster(left ? RE::MagicSystem::CastingSource::kLeftHand : RE::MagicSystem::CastingSource::kRightHand);
-				if (auto* actorCaster = caster ? static_cast<RE::ActorMagicCaster*>(caster) : nullptr; actorCaster && caster->state.underlying() == 0) {
-					actorCaster->castingArt = a_art;
+			if (_stricmp(a_object->name.c_str(), std::string(a_name).c_str()) == 0) {
+				return true;
+			}
+			auto* node = a_object->AsNode();
+			if (!node || a_depth <= 0) {
+				return false;
+			}
+			for (const auto& child : node->GetChildren()) {
+				if (HasNamedNode(child.get(), a_name, a_depth - 1)) {
+					return true;
 				}
 			}
+			return false;
 		}
 
-		void Write(RE::BGSArtObject* a_castingArt, RE::TESObjectLIGH* a_light, RE::BGSArtObject* a_enchantArt,
-			RE::TESEffectShader* a_enchantShader, RE::BGSReferenceEffect* a_enchantVisuals)
+		// Whether a_art's model (by its marker node) is what is attached now; empty when the model is not in the table.
+		std::optional<bool> ShowsArt(const RE::ActorMagicCaster* a_caster, const RE::BGSArtObject* a_art)
 		{
-			auto& data = g_original.effect->data;
-			data.castingArt = a_castingArt;
-			data.light = a_light;
-			data.enchantEffectArt = a_enchantArt;
-			data.enchantShader = a_enchantShader;
-			data.enchantVisuals = a_enchantVisuals;
-		}
-
-		void Restore()
-		{
-			if (g_original.effect && g_applied) {
-				Write(g_original.castingArt, g_original.light, g_original.enchantArt, g_original.enchantShader, g_original.enchantVisuals);
-				g_applied = nullptr;
-				logger::info("STAFF ART restored to SCS's own");
+			const auto marker = MarkerFor(a_art);
+			if (marker.empty()) {
+				return std::nullopt;
 			}
+			return a_caster->flags.all(RE::ActorMagicCaster::Flags::kCastingArtAttached) &&
+			       HasNamedNode(a_caster->castingArtData.attachedArt.get(), marker, kMarkerDepth);
 		}
 
-		void Apply(const RE::SpellItem* a_spell)
+		bool Drawn(RE::PlayerCharacter* a_player)
 		{
-			if (!a_spell || !CaptureOriginal()) {
+			const auto* state = a_player->AsActorState();
+			return state && state->GetWeaponState() == RE::WEAPON_STATE::kDrawn;
+		}
+
+		void Judge(const RE::ActorMagicCaster* a_caster, bool a_drawn)
+		{
+			auto& s = g_state;
+			if (!s.checkId) {
 				return;
 			}
-			const auto* main = a_spell->GetCostliestEffectItem();
-			const auto* source = main ? main->baseEffect : nullptr;
-			if (!source || source == g_applied) {
+			const auto elapsedMs = (s.clock - s.checkStart) * 1000.0f;
+			const auto detail = std::format("art {:08X} after {:.0f} ms", s.checkArt, elapsedMs);
+			// Attached after our detach, with the art we set taken up (castingArt is cleared when it attaches): the
+			// attached one is ours. Which model it is was proven by node names in the test build (9/9).
+			const bool attachedOurs = a_caster->flags.all(RE::ActorMagicCaster::Flags::kCastingArtAttached) && a_caster->castingArtData.attachedArt &&
+			                          !a_caster->castingArt;
+			const auto model = ShowsArt(a_caster, RE::TESForm::LookupByID<RE::BGSArtObject>(s.checkArt));  // empty: not in the table
+			if (a_caster->state.underlying() != 0) {
+				selftest::Skip(s.checkId, detail + " (a cast started first)");
+			} else if (!a_drawn) {
+				selftest::Skip(s.checkId, detail + " (the staff was put away first)");
+			} else if (attachedOurs && model.value_or(true)) {
+				selftest::Report(s.checkId, true, detail + (model ? ": attached, model checked by its marker node" : ": attached (model not in the marker table)"));
+			} else if (s.clock - s.checkStart >= kCheckSecs) {
+				selftest::Report(s.checkId, false, detail + (attachedOurs ? ": another model is attached" : ": nothing attached"));
+			} else {
 				return;
 			}
-			const auto& from = source->data;
-			// Only the charging art follows the spell. The idle glow of the staves tested here is part of the
-			// staff model (Praedy's Staves NIF 'FX' shape with an effect shader), not of the enchantment, so the
-			// enchantment visuals stay SCS's (user test 2026-11-07: idle glow unchanged even after re-equipping).
-			Write(from.castingArt, from.light, g_original.enchantArt, g_original.enchantShader, g_original.enchantVisuals);
-			g_applied = source;
-			logger::info("STAFF ART <- '{}' {:08X}: castingArt={:08X} light={:08X}", a_spell->GetName(), a_spell->GetFormID(),
-				from.castingArt ? from.castingArt->GetFormID() : 0u, from.light ? from.light->GetFormID() : 0u);
-			auto* player = RE::PlayerCharacter::GetSingleton();
-			if (player) {
-				RefreshCastingArt(player, from.castingArt);
-			}
+			s.checkId = nullptr;
 		}
 
-		// Chained after SCS's own interception of the magic menu's spell equip (SCS MenuEquipHook.cpp).
-		void MenuEquipThunk(RE::ActorEquipManager* a_manager, RE::Actor* a_actor, RE::SpellItem* a_spell, RE::BGSEquipSlot** a_slot)
+		void Refresh(RE::ActorMagicCaster* a_caster, const RE::MagicItem* a_item, const char* a_id)
 		{
-			g_previousMenuEquip(a_manager, a_actor, a_spell, a_slot);
-			auto* player = RE::PlayerCharacter::GetSingleton();
-			if (!player || a_actor != player || !a_spell || !a_slot || !*a_slot) {
-				return;
+			auto* art = spell_copy::TipArtOf(a_item);
+			g_detach(a_caster, true);
+			const bool stillAttached = a_caster->flags.all(RE::ActorMagicCaster::Flags::kCastingArtAttached);
+			if (art) {
+				g_setArt(a_caster, art);
 			}
-			const bool left = (*a_slot)->GetFormID() == kLeftHandSlot;
-			if ((left || (*a_slot)->GetFormID() == kRightHandSlot) && HoldsConvertedStaff(player, left)) {
-				Apply(a_spell);  // the staff is still in the hand: SCS consumed the equip as a binding
+			logger::info("staff art: {} for {:08X} -> art {:08X}", a_id, a_item ? a_item->GetFormID() : 0u, art ? art->GetFormID() : 0u);
+			auto& s = g_state;
+			s.shownFor = a_item;
+			s.wait = Wait::kNone;
+			s.drawPending = false;
+			s.slotWrites = hand_slot::Writes();
+			if (stillAttached) {
+				selftest::Report(a_id, false, std::format("art {:08X}: the old art was still attached right after DetachCastingArt", art ? art->GetFormID() : 0u));
+				s.checkId = nullptr;
+			} else if (art) {
+				s.checkId = a_id;
+				s.checkStart = s.clock;
+				s.checkArt = art->GetFormID();
+			} else {
+				s.checkId = nullptr;  // an item without art: only the old one comes off, nothing to judge
 			}
 		}
 	}
 
-	void Install()
+	bool Install()
 	{
-		// SCS installs its required menu hook at kDataLoaded and refuses to run if the call no longer goes
-		// to the engine (in-game test 2026-11-07: "REQUIRED MENU HOOK FAILED" when we chained first).
-		// So this runs on the first kPostLoadGame/kNewGame, after SCS, and only once.
-		static bool installed = false;
-		if (installed) {
+		if (REL::Module::get().version() != REL::Version{ 1, 6, 1170, 0 }) {
+			logger::critical("staff art: 34150/34152 are known for 1.6.1170 only; the mod stays off");
+			return false;
+		}
+		g_detach = reinterpret_cast<DetachArtFn>(REL::ID(34152).address());
+		g_setArt = reinterpret_cast<SetCastingArtFn>(REL::ID(34150).address());
+		logger::info("staff art: DetachCastingArt 34152 at {:X}, SetCastingArt 34150 at {:X}", reinterpret_cast<std::uintptr_t>(g_detach),
+			reinterpret_cast<std::uintptr_t>(g_setArt));
+		return true;
+	}
+
+	void Reset()
+	{
+		g_state = {};
+	}
+
+	void OnFrame(RE::PlayerCharacter* a_player, float a_delta, bool a_staffHeld)
+	{
+		auto& s = g_state;
+		if (std::isfinite(a_delta) && a_delta > 0.0f) {
+			s.clock += a_delta;
+		}
+		auto* caster = RightCaster(a_player);
+		if (!caster || !g_detach) {
 			return;
 		}
-		installed = true;
-		const REL::Relocation<std::uintptr_t> parent{ REL::RelocationID(37952, 38908) };
-		const auto site = parent.address() + 0xD7;  // the call SCS hooks (SCS MenuEquipHook.cpp:42-43)
-		if (*reinterpret_cast<const std::uint8_t*>(site) != 0xE8) {
-			logger::warn("Staff art: menu equip call site is not a CALL; bindings are learned from fired spells only");
+		const bool drawn = Drawn(a_player);
+		if (!a_staffHeld && s.checkId) {
+			selftest::Skip(s.checkId, std::format("art {:08X} (the staff left the hand first)", s.checkArt));
+			s.checkId = nullptr;
+		}
+		Judge(caster, drawn);
+		if (!a_staffHeld) {
+			// Another weapon or a spell: the engine owns that hand's art. Start over when a staff comes back.
+			s.shownFor = nullptr;
+			s.wait = Wait::kNone;
+			s.drawPending = false;
+			s.wasDrawn = drawn;
 			return;
 		}
-		std::int32_t displacement = 0;
-		std::memcpy(&displacement, reinterpret_cast<const void*>(site + 1), sizeof(displacement));
-		g_previousMenuEquip = reinterpret_cast<MenuEquipFn>(site + 5 + static_cast<std::intptr_t>(displacement));
-		auto& trampoline = SKSE::GetTrampoline();
-		trampoline.write_call<5>(site, MenuEquipThunk);
-		logger::info("Hook installed: magic menu spell equip call (chained after {:X})", reinterpret_cast<std::uintptr_t>(g_previousMenuEquip));
-	}
-
-	void OnSpellFired(RE::PlayerCharacter* a_player, const RE::SpellItem* a_spell)
-	{
-		if (a_player && (HoldsConvertedStaff(a_player, true) || HoldsConvertedStaff(a_player, false))) {
-			Apply(a_spell);
+		const auto* slot = a_player->GetActorRuntimeData().selectedSpells[RE::Actor::SlotTypes::kRightHand];
+		const bool  slotIsCopy = spell_copy::IsCopy(slot);
+		if (s.fresh) {
+			s.fresh = false;
+			s.wasDrawn = drawn;  // loaded with the staff out: not a draw (the slot change after the load refreshes instead)
 		}
-	}
-
-	void OnFrame(RE::PlayerCharacter* a_player)
-	{
-		if (g_applied && !HoldsConvertedStaff(a_player, true) && !HoldsConvertedStaff(a_player, false)) {
-			Restore();  // SCS's own staves keep their own look
+		if (drawn && !s.wasDrawn) {
+			s.drawPending = slotIsCopy;  // the engine attaches on draw by itself; ours makes sure it is the copy's art
+			s.drawAt = s.clock;
+			s.drawWrites = hand_slot::Writes();
 		}
+		s.wasDrawn = drawn;
+		if (s.drawPending && slotIsCopy) {
+			// Right after a draw the engine attaches the slot item's art by itself (the copy is preloaded). Checked before
+			// any other trigger, so a change made while sheathed does not detach an art the engine just put on (Codex r2).
+			// Only when the copy was already in the slot at the draw, so the engine attached art for the copy and not
+			// for an item we replaced since (two frost models share one marker node). A model not in the marker table is
+			// trusted when our art is attached and taken up, instead of detaching it after the grace (Carbon 2026-11-17).
+			const bool sameSlot = hand_slot::Writes() == s.drawWrites;
+			const bool attachedTakenUp = caster->flags.all(RE::ActorMagicCaster::Flags::kCastingArtAttached) && caster->castingArtData.attachedArt && !caster->castingArt;
+			if (sameSlot && ShowsArt(caster, spell_copy::TipArtOf(slot)).value_or(attachedTakenUp)) {
+				if (s.wait == Wait::kSheathed) {
+					selftest::Report("T-ART-SHEATHED", true, std::format("copy {:08X}: the engine attached its art on draw, model checked", slot->GetFormID()));
+				}
+				logger::info("staff art: on draw the engine attached the copy's art itself");
+				s.shownFor = slot;
+				s.slotWrites = hand_slot::Writes();
+				s.wait = Wait::kNone;
+				s.drawPending = false;
+				return;
+			}
+			if (s.clock - s.drawAt < kDrawGraceSecs) {
+				return;  // give the engine's own attach a moment first
+			}
+		}
+		const char* id = nullptr;
+		if (slot != s.shownFor && (slotIsCopy || spell_copy::IsCopy(s.shownFor))) {
+			id = slotIsCopy ? "T-ART-SWAP" : "T-ART-CONTROL";  // CONTROL: back to the staff's own enchantment
+		} else if (slotIsCopy && hand_slot::Writes() != s.slotWrites) {
+			id = "T-ART-SWAP";  // written again (the engine had put another item in between)
+		} else if (s.drawPending && slotIsCopy) {
+			id = "T-ART-DRAW";
+		}
+		if (!id) {
+			return;
+		}
+		const bool idle = caster->state.underlying() == 0;
+		if (!drawn || !idle || !a_player->Get3D()) {
+			if (s.wait == Wait::kNone) {
+				s.wait = !drawn ? Wait::kSheathed : !idle ? Wait::kCasting : Wait::kNone;
+			}
+			return;
+		}
+		if (s.wait == Wait::kSheathed) {
+			id = "T-ART-SHEATHED";
+		} else if (s.wait == Wait::kCasting) {
+			id = "T-ART-MIDCAST";
+		}
+		Refresh(caster, slot, id);
 	}
 }

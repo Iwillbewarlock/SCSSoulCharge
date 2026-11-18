@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(SCSSoulCharge VERSION 0.1.0 LANGUAGES CXX)
+project(SCSSoulCharge VERSION 0.2.0 LANGUAGES CXX)
 
 # CommonLibSSE-NG = alandtse/CommonLibVR 10.1.0 (39f9d07), cloned into extern/ (not tracked).
 # Chosen for AE 1.7.104 (address library format 5) support. GPL-3.0 with modding exceptions.
@@ -14,9 +14,8 @@ add_subdirectory(extern/CommonLibSSE-NG CommonLibSSE EXCLUDE_FROM_ALL)
 
 # Game-independent rules, shared by the plugin and the offline tests.
 add_library(scssc_core STATIC
-    src/core/charge_rules.cpp
-    src/core/pool_table.cpp
-    src/core/staff_filter.cpp
+    src/core/bindings.cpp
+    src/core/spell_rules.cpp
 )
 target_include_directories(scssc_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_compile_features(scssc_core PUBLIC cxx_std_23)
@@ -29,16 +28,21 @@ add_test(NAME core_tests COMMAND core_tests)
 add_library(${PROJECT_NAME} SHARED
     src/plugin.cpp
     src/settings.cpp
-    src/keywords.cpp
     src/selftest.cpp
-    src/pool.cpp
-    src/conversion.cpp
     src/serialization.cpp
-    src/casting.cpp
-    src/watch.cpp
-    src/testcontrols.cpp
-    src/enchant_lookup.cpp
+    src/main_queue.cpp
+    src/frame_hook.cpp
+    src/hand_slot.cpp
     src/staff_art.cpp
+    src/staff_item.cpp
+    src/staff_binding.cpp
+    src/spell_copy.cpp
+    src/effect_redirect.cpp
+    src/resource_hook.cpp
+    src/cast_watch.cpp
+    src/api.cpp
+    src/copy_traits.cpp
+    src/staff_mark.cpp
     src/detour_helper.cpp
 )
 target_include_directories(${PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
