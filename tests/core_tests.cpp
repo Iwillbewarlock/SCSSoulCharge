@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <limits>
 #include <map>
+#include <string>
 
 namespace
 {
@@ -146,6 +147,44 @@ namespace
 		Check(ClassifyForStaff(power, true) == BindVerdict::kNotASpell && ClassifyForStaff(unknown, true) == BindVerdict::kNotKnown &&
 				  ClassifyForStaff(ability, true) == BindVerdict::kCastingType,
 			"spell type, knowledge and casting type still rule a spell out (failure guard)");
+		auto runtime = firebolt;
+		runtime.runtimeForm = true;
+		Check(ClassifyForStaff(runtime, true) == BindVerdict::kRuntimeForm, "a spell made during play is refused");
+	}
+
+	// Final review 2026-11-19: dormant vs gone, the release signals, the marker's owner, the binding cap.
+	void FinalReviewRuleTests()
+	{
+		using namespace scssc::core;
+		Check(DecideHeld(false, 0x2B96C, true, false, true) == HeldBinding::kNone, "no binding, nothing to do");
+		Check(DecideHeld(true, 0x2B96C, true, false, true) == HeldBinding::kActive, "a known spell is active");
+		Check(DecideHeld(true, 0x2B96C, true, false, false) == HeldBinding::kDormant, "an unknown spell that exists waits");
+		Check(DecideHeld(true, 0x2B96C, false, false, false) == HeldBinding::kUnbind, "a spell id that finds no form ends the binding");
+		Check(DecideHeld(true, 0, false, false, false) == HeldBinding::kUnbind, "an orphan (spell plugin gone) ends the binding");
+		Check(DecideHeld(true, 0xFF00012Au, true, true, true) == HeldBinding::kUnbind, "a runtime spell from before the load ends the binding");
+		Check(DecideHeld(true, 0xFF00012Au, true, false, true) == HeldBinding::kUnbind, "a 0xFF id ends the binding even if the form is not flagged (boundary)");
+
+		Check(CastReleased(ReleaseSignals{ .releaseState = true }), "a release state counts");
+		Check(CastReleased(ReleaseSignals{ .effectApplied = true, .otherHandCast = true }), "an applied effect counts even with the left hand busy");
+		Check(CastReleased(ReleaseSignals{ .paidEnough = true }), "magicka paid counts when nothing else drained it");
+		Check(!CastReleased(ReleaseSignals{ .paidEnough = true, .otherHandCast = true }), "a drop while the left hand cast does not count (failure)");
+		Check(!CastReleased(ReleaseSignals{ .paidEnough = true, .slotChanged = true }), "a drop after the slot changed does not count (failure)");
+		Check(!CastReleased(ReleaseSignals{}), "no signal, no message (boundary)");
+
+		Check(WithoutMarker("Firebolt \xE2\x98\x85", " \xE2\x98\x85", true) == "Firebolt", "our marker comes off");
+		Check(WithoutMarker("Firebolt II", " II", false) == "Firebolt II", "a name that ends like the marker keeps it when we did not add it");
+		Check(WithoutMarker("Firebolt", " \xE2\x98\x85", true) == "Firebolt", "no marker, name unchanged (boundary)");
+		Check(WithoutMarker("Firebolt \xE2\x98\x85", "", true) == "Firebolt \xE2\x98\x85", "marker off, name unchanged (boundary)");
+
+		BindingTable full;
+		const std::string longName(BindingTable::kMaxNameBytes + 40, 'x');
+		for (std::uint32_t i = 0; i < BindingTable::kMaxBindings; ++i) {
+			const StaffKey key{ 0x4C6CA, 0x14 + i, static_cast<std::uint16_t>(i) };
+			(void)full.Toggle(key, 0x2B96C, NameState{ true, longName, longName });
+		}
+		Check(full.Full() && full.Size() == BindingTable::kMaxBindings, "the table reports full at the cap");
+		Check(full.Serialize().size() <= BindingTable::kMaxSerializedBytes, "a full table with the longest names fits the reader's limit");
+		Check(BindingTable::kMaxSerializedBytes <= (4u << 20), "the limit stays under the 4 MiB the old reader accepted");
 	}
 }
 
@@ -153,6 +192,7 @@ int main()
 {
 	BindingTableTests();
 	SpellRuleTests();
+	FinalReviewRuleTests();
 	std::printf("core_tests: %d checks, %d failures\n", g_checks, g_failures);
 	return g_failures == 0 ? 0 : 1;
 }

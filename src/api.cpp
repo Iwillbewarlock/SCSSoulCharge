@@ -1,42 +1,44 @@
+#include "plugin_state.h"
+#include "settings.h"
 #include "spell_copy.h"
-
-// For other SKSE plugins (Heart of Magic first, user decision 2026-11-17): a staff casts a runtime copy of the bound
-// spell (an EnchantmentItem), so a plugin that counts spell casts or weakens spells by FormID can ask which spell a
-// copy stands for. Find with GetModuleHandleW(L"SCSSoulCharge.dll") and GetProcAddress. Safe from any thread.
-// Version 1: ApiVersion, GetOriginalSpell. Version 2 adds GetHeldStaffSpell and GetNameMarker (2026-11-18). None lets
-// an exception cross the C boundary.
-
 #include "staff_mark.h"
+
+// For other SKSE plugins; the contract is in api.h. None lets an exception cross the C boundary: the others only read
+// atomics and a string, and GetOriginalSpell, which looks a form up, ends in a catch-all that returns 0, the one
+// place a catch-all is right (an exception out of a noexcept function ends the game).
 
 extern "C" __declspec(dllexport) std::uint32_t SCSSoulCharge_ApiVersion() noexcept
 {
-	return 2;
+	return 3;
 }
 
-// The spell bound to the staff the player holds now (its name carries the marker), or 0. A menu that draws its own icon
-// shows the icon for this spell and strips the marker from the name.
+extern "C" __declspec(dllexport) bool SCSSoulCharge_IsActive() noexcept
+{
+	return scssc::IsActive();
+}
+
 extern "C" __declspec(dllexport) std::uint32_t SCSSoulCharge_GetHeldStaffSpell() noexcept
 {
-	return scssc::staff_mark::MarkedSpell();
+	return scssc::staff_mark::HeldSpell();
 }
 
-// The marker text appended to that spell's name (UTF-8, starts with a space; empty when turned off). Valid for the whole
-// game session. A mod that stores spell names (Heart of Magic's learning rename) strips it first.
 extern "C" __declspec(dllexport) const char* SCSSoulCharge_GetNameMarker() noexcept
 {
-	static const std::string marker{ scssc::staff_mark::Marker() };
-	return marker.c_str();
+	// Read every call, not frozen at the first one: a caller before our plugin load would have fixed the default
+	// (Opus, Carbon 2026-11-19). The string is set once at plugin load and not changed after, so the pointer stays valid.
+	if (!scssc::IsActive()) {
+		return "";
+	}
+	return scssc::Settings::Get().staffMarker.c_str();
 }
 
-// The FormID of the spell a staff copy was made from, or 0 when a_item is not one of this mod's copies.
 extern "C" __declspec(dllexport) std::uint32_t SCSSoulCharge_GetOriginalSpell(std::uint32_t a_item) noexcept
 {
 	try {
 		const auto* item = RE::TESForm::LookupByID<RE::MagicItem>(a_item);
 		const auto* original = scssc::spell_copy::OriginalOf(item);
 		return original ? original->GetFormID() : 0;
-	} catch (const std::exception& e) {
-		logger::error("API GetOriginalSpell({:08X}) failed: {}", a_item, e.what());
+	} catch (...) {  // see the top of the file
 		return 0;
 	}
 }

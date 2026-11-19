@@ -9,6 +9,7 @@ namespace scssc::staff_binding
 {
 	// The magic menu's spell equip call (37952/38908 +0xD7), chained after SCS's own hook: run on the first
 	// kPostLoadGame/kNewGame, after SCS hooked the same call at its kDataLoaded. Also registers the event sinks.
+	// When the call site is not a plain CALL, bindings stay saved but are not applied (no way to change them).
 	void InstallMenuHook();
 
 	// Main thread, every unpaused frame: put the bound copy in the hand slot, or the staff's own enchantment back.
@@ -25,10 +26,20 @@ namespace scssc::staff_binding
 	// The co-save was read with this many bindings (arms T-SAVE-REBIND).
 	void OnLoaded(std::size_t a_bindings);
 
+	// kPostLoadGame / kNewGame, after InstallMenuHook: the one-time notice when the menu hook failed, and the
+	// [Uninstall] bRestoreNames run (queued for the main thread).
+	void OnPostLoad();
+
 	// The table for the co-save, with pending unique id changes applied first.
 	core::BindingTable& TableForSave();
 
 	core::BindingTable& Table();
+
+	// Bindings are applied (false after the menu hook failed, or while the uninstall option runs). Any thread.
+	bool Applying();
+
+	// The [Uninstall] run, at once, for kPostLoadGame while the mod is off (a hook failed on the supported runtime).
+	void RunUninstallNow();
 
 	// The bound spell of the staff in the right hand as of the last frame, or null (none, or not known right now).
 	RE::SpellItem* ActiveSpell();

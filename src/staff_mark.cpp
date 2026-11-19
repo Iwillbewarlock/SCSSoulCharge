@@ -1,5 +1,6 @@
 #include "staff_mark.h"
 
+#include "core/bindings.h"
 #include "selftest.h"
 #include "settings.h"
 
@@ -10,29 +11,30 @@ namespace scssc::staff_mark
 	namespace
 	{
 		RE::SpellItem*          g_marked = nullptr;  // main thread
-		std::atomic<RE::FormID> g_markedId{ 0 };
+		bool                    g_ours = false;      // main thread: the marker on g_marked's name is the one we added
+		std::atomic<RE::FormID> g_heldId{ 0 };
 
 		bool EndsWithMarker(std::string_view a_name)
 		{
 			const auto marker = Marker();
-			return !marker.empty() && a_name.size() >= marker.size() && a_name.substr(a_name.size() - marker.size()) == marker;
+			return !marker.empty() && a_name.ends_with(marker);
 		}
 
 		void Unmark()
 		{
-			if (!g_marked) {
-				return;
-			}
-			const std::string_view name = g_marked->fullName.c_str();
-			if (EndsWithMarker(name)) {
-				g_marked->fullName = std::string(Strip(name)).c_str();
+			if (g_marked && g_ours) {
+				const std::string_view name = g_marked->fullName.c_str();
+				if (EndsWithMarker(name)) {
+					g_marked->fullName = std::string(core::WithoutMarker(name, Marker(), true)).c_str();
+				}
 			}
 			g_marked = nullptr;
-			g_markedId = 0;
+			g_ours = false;
 		}
 
 		// Adds the marker when the name lacks it. Heart of Magic rewrites a weakened spell's name ("(Learning - 35%)"),
-		// so the check runs every frame and the marker comes back after such a rewrite.
+		// so the check runs every frame and the marker comes back after such a rewrite. A name that already ends with
+		// the marker text is left alone and not counted as ours.
 		void Mark(RE::SpellItem* a_spell)
 		{
 			const std::string_view name = a_spell->fullName.c_str();
@@ -41,6 +43,7 @@ namespace scssc::staff_mark
 			}
 			const std::string marked = std::string(name) + std::string(Marker());
 			a_spell->fullName = marked.c_str();
+			g_ours = true;
 			selftest::Report("T-MARK", EndsWithMarker(a_spell->GetName()), std::format("spell {:08X} now shows '{}'", a_spell->GetFormID(), a_spell->GetName()));
 		}
 	}
@@ -50,20 +53,23 @@ namespace scssc::staff_mark
 		return Settings::Get().staffMarker;
 	}
 
-	std::string_view Strip(std::string_view a_name)
+	std::string_view CleanName(const RE::SpellItem* a_spell)
 	{
-		return EndsWithMarker(a_name) ? a_name.substr(0, a_name.size() - Marker().size()) : a_name;
+		if (!a_spell) {
+			return {};
+		}
+		return core::WithoutMarker(a_spell->fullName.c_str(), Marker(), a_spell == g_marked && g_ours);
 	}
 
 	void OnFrame(RE::SpellItem* a_spell)
 	{
+		g_heldId = a_spell ? a_spell->GetFormID() : 0;  // before the marker check: the API answers with the marker off too (Astra 2026-11-19)
 		if (Marker().empty()) {
 			return;  // turned off in the INI
 		}
 		if (a_spell != g_marked) {
 			Unmark();
 			g_marked = a_spell;
-			g_markedId = a_spell ? a_spell->GetFormID() : 0;
 		}
 		if (g_marked) {
 			Mark(g_marked);
@@ -73,10 +79,11 @@ namespace scssc::staff_mark
 	void Reset()
 	{
 		Unmark();
+		g_heldId = 0;
 	}
 
-	RE::FormID MarkedSpell()
+	RE::FormID HeldSpell()
 	{
-		return g_markedId.load();
+		return g_heldId.load();
 	}
 }

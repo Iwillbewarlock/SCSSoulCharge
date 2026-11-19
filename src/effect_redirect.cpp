@@ -3,6 +3,7 @@
 #include "selftest.h"
 #include "spell_copy.h"
 
+#include <atomic>
 #include <mutex>
 #include <unordered_set>
 
@@ -13,6 +14,7 @@ namespace scssc::effect_redirect
 		// One PASS line per copy per game session, so the log shows each spell once without flooding.
 		std::mutex                               g_reportLock;
 		std::unordered_set<const RE::MagicItem*> g_reported;
+		std::atomic<std::uint32_t>               g_copyApplications{ 0 };
 
 		void ReportOnce(const RE::MagicItem* a_copy, bool a_ok, const std::string& a_detail)
 		{
@@ -53,6 +55,12 @@ namespace scssc::effect_redirect
 				auto* const effect = a_data.effect;
 				const bool redirected = Redirect(a_data);
 				const bool result = original(a_this, a_data);
+				// Effects on the player only (a summon's, a self spell's): a projectile of the last cast landing on
+				// someone else while the next one charges must not count as that one's release.
+				auto* player = RE::PlayerCharacter::GetSingleton();
+				if (result && player && a_this == player->AsMagicTarget() && (redirected || spell_copy::IsCopy(item))) {
+					g_copyApplications.fetch_add(1);
+				}
 				if (redirected && result) {  // judged once the engine took the effect, not before
 					ReportOnce(item, true,
 						std::format("copy {:08X} -> spell {:08X} '{}' mgef={:08X}", item->GetFormID(), a_data.magicItem->GetFormID(), a_data.magicItem->GetName(),
@@ -75,5 +83,10 @@ namespace scssc::effect_redirect
 		REL::Relocation<std::uintptr_t> player{ RE::VTABLE_PlayerCharacter[4] };
 		AddTargetHook<1>::original = player.write_vfunc(0x1, AddTargetHook<1>::Thunk);
 		logger::info("Hook installed: MagicTarget::AddTarget (Character, PlayerCharacter)");
+	}
+
+	std::uint32_t CopyApplications()
+	{
+		return g_copyApplications.load();
 	}
 }

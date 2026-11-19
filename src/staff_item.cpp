@@ -52,6 +52,71 @@ namespace scssc::staff_item
 		return std::nullopt;
 	}
 
+	std::optional<Held> LeftHand(RE::PlayerCharacter* a_player)
+	{
+		auto* weapon = a_player ? a_player->GetEquippedObject(true) : nullptr;
+		auto* staff = weapon ? weapon->As<RE::TESObjectWEAP>() : nullptr;
+		auto* changes = IsTarget(staff) ? a_player->GetInventoryChanges() : nullptr;
+		if (!changes || !changes->entryList) {
+			return std::nullopt;
+		}
+		for (auto* entry : *changes->entryList) {
+			if (!entry || entry->object != staff || !entry->extraLists) {
+				continue;
+			}
+			for (auto* list : *entry->extraLists) {
+				if (list && list->HasType(RE::ExtraDataType::kWornLeft)) {
+					return Held{ staff, list, list->GetCount() };
+				}
+			}
+		}
+		return std::nullopt;
+	}
+
+	std::optional<Held> FindWithoutId(RE::PlayerCharacter* a_player, RE::FormID a_staff, std::string_view a_name)
+	{
+		auto* changes = a_player ? a_player->GetInventoryChanges() : nullptr;
+		if (!changes || !changes->entryList) {
+			return std::nullopt;
+		}
+		for (auto* entry : *changes->entryList) {
+			auto* staff = entry && entry->object ? entry->object->As<RE::TESObjectWEAP>() : nullptr;
+			if (!staff || staff->GetFormID() != a_staff || !entry->extraLists) {
+				continue;
+			}
+			for (auto* list : *entry->extraLists) {
+				if (!list || list->HasType(RE::ExtraDataType::kUniqueID)) {
+					continue;
+				}
+				const Held held{ staff, list, list->GetCount() };
+				if (DisplayName(held) == a_name) {
+					return held;
+				}
+			}
+		}
+		return std::nullopt;
+	}
+
+	void ForEachWithId(RE::PlayerCharacter* a_player, const std::function<void(const Held&, const core::StaffKey&)>& a_fn)
+	{
+		auto* changes = a_player ? a_player->GetInventoryChanges() : nullptr;
+		if (!changes || !changes->entryList) {
+			return;
+		}
+		for (auto* entry : *changes->entryList) {
+			auto* staff = entry && entry->object ? entry->object->As<RE::TESObjectWEAP>() : nullptr;
+			if (!staff || !staff->IsStaff() || !entry->extraLists) {
+				continue;
+			}
+			for (auto* list : *entry->extraLists) {
+				const auto* id = list ? list->GetByType<RE::ExtraUniqueID>() : nullptr;
+				if (id && id->baseID != 0) {
+					a_fn(Held{ staff, list, list->GetCount() }, core::StaffKey{ staff->GetFormID(), id->baseID, id->uniqueID });
+				}
+			}
+		}
+	}
+
 	std::optional<core::StaffKey> KeyOf(RE::PlayerCharacter* a_player, const Held& a_held, bool a_assign)
 	{
 		if (!a_held.list) {

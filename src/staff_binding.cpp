@@ -3,7 +3,9 @@
 #include "frame_hook.h"
 #include "hand_slot.h"
 #include "main_queue.h"
+#include "messages.h"
 #include "selftest.h"
+#include "settings.h"
 #include "spell_copy.h"
 #include "staff_item.h"
 #include "staff_mark.h"
@@ -12,6 +14,7 @@
 #include <cstring>
 #include <map>
 #include <mutex>
+#include <set>
 #include <vector>
 
 namespace scssc::staff_binding
@@ -49,9 +52,65 @@ namespace scssc::staff_binding
 
 		RE::SpellItem* g_activeSpell = nullptr;  // main thread; what staff_mark marks
 
+		// Why saved bindings are kept but not applied: the menu hook could not be placed (nothing could change or clear
+		// them, Astra 2026-11-19), or the [Uninstall] option runs. The staff casts its own enchantment meanwhile.
+		enum class Off : std::uint8_t
+		{
+			kNo,
+			kMenuHook,
+			kUninstall,
+		};
+		std::atomic<Off> g_off{ Off::kNo };
+		bool             g_menuHooked = false;  // the menu hook result, once placed or refused
+
+		// Names left by bindings whose item lost its unique id where we could not reach it (main thread, this game run):
+		// the name is taken off when the item shows up again, so a new pick does not stack "[A] [B]" (Carbon 2026-11-19).
+		std::vector<std::pair<RE::FormID, core::NameState>> g_lostNames;
+
+		// The left-hand notice is checked when the player's staves change, once per item.
+		std::uint32_t                 g_leftCheckedSeq = 0;
+		std::set<core::StaffKey>      g_leftNotified;  // each item once a game run (Astra 2026-11-19: one key repeated for A, B, A)
+
 		std::string KeyText(const core::StaffKey& a_key)
 		{
 			return std::format("{:08X}/({:08X},{})", a_key.staff, a_key.uidBase, a_key.uid);
+		}
+
+		void Notify(const std::string& a_text)
+		{
+			logger::info("notify: {}", a_text);
+			RE::SendHUDMessage::ShowHUDMessage(a_text.c_str());
+		}
+
+		// The item lost its id: give its name back now if it is still in the player's inventory, else remember it.
+		void RestoreLostName(RE::FormID a_staff, const core::NameState& a_name)
+		{
+			if (a_name.written.empty()) {
+				return;
+			}
+			auto* player = RE::PlayerCharacter::GetSingleton();
+			if (const auto held = staff_item::FindWithoutId(player, a_staff, a_name.written)) {
+				logger::info("lost-id staff {:08X}: {}", a_staff, staff_item::RestoreName(*held, a_name));
+				return;
+			}
+			logger::warn("lost-id staff {:08X} is not in the inventory; its name '{}' goes back when it is held again (this game run only)", a_staff, a_name.written);
+			g_lostNames.emplace_back(a_staff, a_name);
+		}
+
+		// A held staff without a binding that still shows a name we wrote before its id was lost.
+		void TakeLostName(const staff_item::Held& a_held)
+		{
+			if (g_lostNames.empty()) {
+				return;
+			}
+			const auto shown = staff_item::DisplayName(a_held);
+			const auto it = std::ranges::find_if(g_lostNames, [&](const auto& a_entry) {
+				return a_entry.first == a_held.staff->GetFormID() && a_entry.second.written == shown;
+			});
+			if (it != g_lostNames.end()) {
+				logger::info("lost-id staff {:08X} held again: {}", it->first, staff_item::RestoreName(a_held, it->second));
+				g_lostNames.erase(it);
+			}
 		}
 
 		void ApplyPendingMoves()
@@ -66,8 +125,11 @@ namespace scssc::staff_binding
 					continue;  // an id given to an item that had none: nothing can be bound under {staff, 0, 0} (Carbon 2026-11-17)
 				}
 				if (to.uidBase == 0) {
-					if (g_table.Remove(from)) {
+					if (const auto* binding = g_table.Find(from)) {
+						const auto name = binding->name;
+						g_table.Remove(from);
 						logger::info("binding {} dropped: the item lost its id", KeyText(from));
+						RestoreLostName(from.staff, name);
 					}
 					g_engineOwn.erase(from);
 					continue;
@@ -84,12 +146,6 @@ namespace scssc::staff_binding
 					selftest::Report("T-UNIQ", g_table.Find(to) != nullptr, std::format("{} -> {}", KeyText(from), KeyText(to)));
 				}
 			}
-		}
-
-		void Notify(const std::string& a_text)
-		{
-			logger::info("notify: {}", a_text);
-			RE::SendHUDMessage::ShowHUDMessage(a_text.c_str());
 		}
 
 		RE::ActorMagicCaster* RightCaster(RE::PlayerCharacter* a_player)
@@ -149,10 +205,16 @@ namespace scssc::staff_binding
 			if (!player) {
 				return;
 			}
+			if (g_off.load() != Off::kNo) {
+				return;
+			}
 			const auto held = staff_item::RightHand(player);
-			if (a_pick.weaponSeq != g_weaponSeq.load() || !held || held->staff->GetFormID() != a_pick.staff) {
+			// With an id at pick time the key check below proves it is the same item; the counter only guards a staff
+			// that had none (another staff of the same kind may be in the hand now).
+			const bool sameItemUnproven = !a_pick.key && a_pick.weaponSeq != g_weaponSeq.load();
+			if (sameItemUnproven || !held || held->staff->GetFormID() != a_pick.staff) {
 				logger::info("pick {:08X} dropped: the right-hand weapon changed after it", a_pick.spell);
-				Notify("The staff changed before the spell could be set; pick it again");
+				Notify(messages::Text(messages::Msg::kPickDropped));
 				return;
 			}
 			auto*      spell = RE::TESForm::LookupByID<RE::SpellItem>(a_pick.spell);
@@ -162,25 +224,35 @@ namespace scssc::staff_binding
 				return;
 			}
 			if (held->count != 1) {
-				Notify(std::format("Only a single staff can hold a spell ({} share this item)", held->count));
+				Notify(messages::Text(messages::Msg::kSingleOnly, std::to_string(held->count)));
 				return;
 			}
 			if (staff_item::NameLocked(*held)) {
-				Notify("This staff's name belongs to a quest; it cannot hold a spell");
+				Notify(messages::Text(messages::Msg::kNameLocked));
 				return;
 			}
-			const auto key = staff_item::KeyOf(player, *held, true);
+			// With an id at pick time, compare first and give no id to another item (Opus 2026-11-19).
+			const auto key = staff_item::KeyOf(player, *held, !a_pick.key.has_value());
 			if (!key || (a_pick.key && *a_pick.key != *key)) {
 				logger::warn("pick {:08X} dropped: the item id is {} (pick time {})", a_pick.spell, key ? KeyText(*key) : "missing",
 					a_pick.key ? KeyText(*a_pick.key) : "none");
+				Notify(messages::Text(messages::Msg::kPickDropped));  // the equip was taken by the menu hook: say so
+				return;
+			}
+			if (!g_table.Find(*key) && g_table.Full()) {
+				logger::warn("pick {:08X} dropped: {} bindings, the most a save keeps", a_pick.spell, g_table.Size());
+				Notify(messages::Text(messages::Msg::kTableFull, std::to_string(g_table.Size())));
 				return;
 			}
 			if (auto* caster = RightCaster(player); caster && caster->state.underlying() != 0) {
 				caster->InterruptCast(false);  // a menu pick cuts the running cast first (SCS Equipment.cpp:52-56)
 			}
+			if (!g_table.Find(*key)) {
+				TakeLostName(*held);  // a name left from a binding lost with the item's old id is not kept as the original
+			}
 			const auto            current = staff_item::DisplayName(*held);
 			const auto            before = g_table.Find(*key) ? std::optional<core::NameState>{ g_table.Find(*key)->name } : std::nullopt;
-			const std::string     spellName{ core::SpellNameForStaff(staff_mark::Strip(spell->GetName())) };
+			const std::string     spellName{ core::SpellNameForStaff(staff_mark::CleanName(spell)) };
 			const core::NameState fresh{ staff_item::HasOwnName(*held), current, core::ComposeName(current, spellName) };
 			switch (g_table.Toggle(*key, spell->GetFormID(), fresh)) {
 			case core::ToggleResult::kAssigned:
@@ -192,7 +264,7 @@ namespace scssc::staff_binding
 					}
 					selftest::Report("T-NAME", written || !fits, std::format("{} '{}' (fits={})", KeyText(*key), fresh.written, fits));
 					logger::info("binding {} <- {:08X} '{}' (name {})", KeyText(*key), spell->GetFormID(), spellName, written ? "written" : "NOT written");
-					Notify(std::format("{} now casts {}", current, spellName));
+					Notify(messages::Text(messages::Msg::kNowCasts, current, spellName));
 					break;
 				}
 			case core::ToggleResult::kChanged:
@@ -208,14 +280,14 @@ namespace scssc::staff_binding
 					binding.name.written = written ? name : std::string{};
 					selftest::Report("T-NAME", written || !fits, std::format("{} '{}' (fits={})", KeyText(*key), name, fits));
 					logger::info("binding {} changed to {:08X} '{}' (name {})", KeyText(*key), spell->GetFormID(), spellName, written ? "written" : "NOT written");
-					Notify(std::format("{} now casts {}", binding.name.original, spellName));
+					Notify(messages::Text(messages::Msg::kNowCasts, binding.name.original, spellName));
 					break;
 				}
 			case core::ToggleResult::kCleared:
 				{
 					const char* name = before ? staff_item::RestoreName(*held, *before) : "no record";
 					logger::info("binding {} cleared by picking {:08X} again: {}", KeyText(*key), spell->GetFormID(), name);
-					Notify(std::format("{} casts its own enchantment again", staff_item::DisplayName(*held)));
+					Notify(messages::Text(messages::Msg::kOwnAgain, staff_item::DisplayName(*held)));
 					break;
 				}
 			}
@@ -270,7 +342,7 @@ namespace scssc::staff_binding
 			if (list) {
 				list->Update();  // the engine rebuilds the entries from the spells, names included
 			}
-			logger::info("marker preview: {} for pick {:08X}, magic menu list {}", staff_mark::MarkedSpell() ? "moved" : "cleared", a_spell,
+			logger::info("marker preview: {} for pick {:08X}, magic menu list {}", staff_mark::HeldSpell() ? "moved" : "cleared", a_spell,
 				list ? "refreshed" : "not open (another menu draws it)");
 		}
 
@@ -279,7 +351,8 @@ namespace scssc::staff_binding
 		{
 			auto*      player = RE::PlayerCharacter::GetSingleton();
 			const bool rightHand = a_slot && *a_slot && (*a_slot)->GetFormID() == kRightHandSlot;
-			const auto held = player && a_actor == player && a_spell && rightHand ? staff_item::RightHand(player) : std::nullopt;
+			const bool taking = g_off.load() == Off::kNo;  // the uninstall option takes no new picks
+			const auto held = taking && player && a_actor == player && a_spell && rightHand ? staff_item::RightHand(player) : std::nullopt;
 			if (!held) {
 				g_previousMenuEquip(a_manager, a_actor, a_spell, a_slot);
 				return;
@@ -287,15 +360,14 @@ namespace scssc::staff_binding
 			const auto verdict = core::ClassifyForStaff(spell_copy::TraitsOf(a_spell, player), true);
 			if (verdict != core::BindVerdict::kAllowed) {
 				// Equipped to the hand as usual (the staff goes down), with the original slot pointer (design 3).
-				Notify(std::format("{} cannot go on a staff ({})", a_spell->GetName(), core::Describe(verdict)));
+				Notify(messages::Text(messages::Msg::kCannotBind, std::string(staff_mark::CleanName(a_spell)), messages::Raw(messages::ReasonFor(verdict))));
 				g_previousMenuEquip(a_manager, a_actor, a_spell, a_slot);
 				return;
 			}
 			// Checked here too, not only when the pick is applied: otherwise the equip was swallowed and the spell went
 			// neither on the staff nor into the hand (Carbon 2026-11-17).
 			if (held->count != 1 || staff_item::NameLocked(*held)) {
-				Notify(held->count != 1 ? std::format("Only a single staff can hold a spell ({} share this item)", held->count) :
-				                          std::string("This staff's name belongs to a quest; it cannot hold a spell"));
+				Notify(held->count != 1 ? messages::Text(messages::Msg::kSingleOnly, std::to_string(held->count)) : messages::Text(messages::Msg::kNameLocked));
 				g_previousMenuEquip(a_manager, a_actor, a_spell, a_slot);
 				return;
 			}
@@ -341,13 +413,54 @@ namespace scssc::staff_binding
 		{
 			RE::BSEventNotifyControl ProcessEvent(const RE::TESEquipEvent* a_event, RE::BSTEventSource<RE::TESEquipEvent>*) override
 			{
-				if (a_event && a_event->actor && a_event->actor->IsPlayerRef() && RE::TESForm::LookupByID<RE::TESObjectWEAP>(a_event->baseObject)) {
+				// Staves only: taking a dagger out of the left hand (equipping a left-hand spell over it) must not drop a
+				// pick made for the right-hand staff (Carbon 2026-11-19). The event names no hand.
+				if (a_event && a_event->actor && a_event->actor->IsPlayerRef() && staff_item::IsTarget(RE::TESForm::LookupByID<RE::TESObjectWEAP>(a_event->baseObject))) {
 					g_weaponSeq.fetch_add(1);
 				}
 				return RE::BSEventNotifyControl::kContinue;
 			}
 		};
 		EquipSink g_equipSink;
+
+		// A bound staff in the left hand casts its own enchantment (only the right hand's slot is managed): say so once
+		// per item, checked when the player's staves change (Opus 2026-11-19).
+		void CheckLeftHand(RE::PlayerCharacter* a_player)
+		{
+			if (g_off.load() != Off::kNo) {
+				return;  // the right hand casts its own enchantment too then: the notice would be wrong
+			}
+			const auto seq = g_weaponSeq.load();
+			if (seq == g_leftCheckedSeq) {
+				return;
+			}
+			g_leftCheckedSeq = seq;
+			const auto left = staff_item::LeftHand(a_player);
+			const auto key = left ? staff_item::KeyOf(a_player, *left, false) : std::nullopt;
+			if (!key || !g_table.Find(*key) || !g_leftNotified.insert(*key).second) {
+				return;
+			}
+			Notify(messages::Text(messages::Msg::kLeftHand, staff_item::DisplayName(*left)));
+		}
+
+		// [Uninstall] bRestoreNames: every bound staff the player carries gets its name back and loses its binding.
+		// Bindings of staves elsewhere (chests, followers) stay in the table: their names cannot be reached from here.
+		void RunUninstall()
+		{
+			auto* player = RE::PlayerCharacter::GetSingleton();
+			if (!player) {
+				return;
+			}
+			std::size_t restored = 0;
+			staff_item::ForEachWithId(player, [&](const staff_item::Held& a_held, const core::StaffKey& a_key) {
+				if (g_table.Find(a_key)) {
+					Unbind(a_held, a_key, "uninstall option");
+					++restored;
+				}
+			});
+			logger::warn("uninstall option: {} bindings ended in the inventory, {} left (staves not carried)", restored, g_table.Size());
+			Notify(messages::Text(messages::Msg::kUninstallDone, std::to_string(restored)));
+		}
 	}
 
 	void InstallMenuHook()
@@ -366,9 +479,12 @@ namespace scssc::staff_binding
 		const REL::Relocation<std::uintptr_t> parent{ REL::RelocationID(37952, 38908) };
 		const auto                            site = parent.address() + 0xD7;  // the call SCS hooks (SCS MenuEquipHook.cpp:42-43)
 		if (*reinterpret_cast<const std::uint8_t*>(site) != 0xE8) {
-			logger::critical("menu equip call site {:X} is not a CALL; spells cannot be put on staves", site);
+			logger::critical("menu equip call site {:X} is not a CALL (another mod patched it?); spells cannot be put on staves, saved bindings are kept but not applied",
+				site);
+			g_off = Off::kMenuHook;
 			return;
 		}
+		g_menuHooked = true;
 		std::int32_t displacement = 0;
 		std::memcpy(&displacement, reinterpret_cast<const void*>(site + 1), sizeof(displacement));
 		g_previousMenuEquip = reinterpret_cast<MenuEquipFn>(site + 5 + static_cast<std::intptr_t>(displacement));
@@ -379,6 +495,7 @@ namespace scssc::staff_binding
 	bool OnFrame(RE::PlayerCharacter* a_player)
 	{
 		ApplyPendingMoves();
+		CheckLeftHand(a_player);
 		g_activeSpell = nullptr;
 		const auto held = staff_item::RightHand(a_player);
 		if (g_saving.load()) {
@@ -393,20 +510,27 @@ namespace scssc::staff_binding
 			return false;
 		}
 		const auto key = staff_item::KeyOf(a_player, *held, false);
-		auto*      binding = key ? g_table.Find(*key) : nullptr;
-		if (binding && binding->spell == 0) {
-			Unbind(*held, *key, "its spell's plugin is gone");
+		auto*      binding = key && g_off.load() == Off::kNo ? g_table.Find(*key) : nullptr;  // off: the restore-own path below runs
+		RE::SpellItem* spell = binding && binding->spell ? RE::TESForm::LookupByID<RE::SpellItem>(binding->spell) : nullptr;
+		const auto     state = core::DecideHeld(binding != nullptr, binding ? binding->spell : 0, spell != nullptr, spell && spell->IsDynamicForm(),
+            spell && a_player->HasSpell(spell));
+		if (state == core::HeldBinding::kUnbind) {
+			const auto staffName = staff_item::DisplayName(*held);
+			Unbind(*held, *key, binding->spell ? "its spell no longer exists" : "its spell's plugin is gone");
+			Notify(messages::Text(messages::Msg::kSpellGone, staffName));
 			binding = nullptr;
+			spell = nullptr;
+		} else if (state == core::HeldBinding::kNone) {
+			TakeLostName(*held);
 		}
-		RE::SpellItem* spell = binding ? RE::TESForm::LookupByID<RE::SpellItem>(binding->spell) : nullptr;
 		// Not known right now (Heart of Magic takes spells away while it swaps or re-locks a learning target): the
 		// binding stays, the staff casts its own enchantment, and the spell comes back by itself (user 2026-11-17).
-		const bool dormant = binding && (!spell || !a_player->HasSpell(spell));
+		const bool dormant = state == core::HeldBinding::kDormant;
 		if (dormant != (g_dormant == key)) {
 			if (dormant) {
 				g_dormant = key;
 				logger::info("binding {} dormant: spell {:08X} is not known now", KeyText(*key), binding->spell);
-				Notify(std::format("{} casts its own enchantment until its spell is known again", staff_item::DisplayName(*held)));
+				Notify(messages::Text(messages::Msg::kDormant, staff_item::DisplayName(*held)));
 			} else if (g_dormant && g_dormant == key) {
 				g_dormant.reset();
 				logger::info("binding {} active again", KeyText(*key));
@@ -491,6 +615,8 @@ namespace scssc::staff_binding
 			g_pendingMoves.clear();  // id changes of the game being left (Codex r2); the loaded save's come after this
 		}
 		g_rebindPending = false;
+		g_lostNames.clear();  // names of the game being left
+		g_leftNotified.clear();
 		g_weaponSeq.fetch_add(1);
 		const std::scoped_lock lock{ g_pickLock };
 		g_pendingPick.reset();  // its queued task was dropped with the old generation: the next pick must post again
@@ -501,10 +627,36 @@ namespace scssc::staff_binding
 		g_rebindPending = a_bindings > 0;
 	}
 
+	void OnPostLoad()
+	{
+		if (!g_menuHooked) {
+			static bool shown = false;  // once a game run: the hook is not retried
+			if (!shown) {
+				shown = true;
+				RE::DebugMessageBox(messages::Text(messages::Msg::kMenuHookFailed).c_str());
+			}
+		}
+		if (Settings::Get().restoreNames) {  // works with the menu hook missing too: it only needs the inventory
+			g_off = Off::kUninstall;
+			main_queue::Post(RunUninstall);
+		}
+	}
+
 	core::BindingTable& TableForSave()
 	{
 		ApplyPendingMoves();
 		return g_table;
+	}
+
+	void RunUninstallNow()
+	{
+		g_off = Off::kUninstall;
+		RunUninstall();
+	}
+
+	bool Applying()
+	{
+		return g_off.load() == Off::kNo;
 	}
 
 	core::BindingTable& Table()

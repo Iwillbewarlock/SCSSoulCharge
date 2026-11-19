@@ -79,7 +79,8 @@ namespace scssc
 			staffMarker = " " + custom.front();  // the INI cannot hold a leading space: one is put back
 		}
 		excludeSpecs = ReadList(L"Staves", L"sExclude");
-		logger::info("Settings: selfTest={} exclude={} staffMarker='{}'", selfTest, excludeSpecs.size(), staffMarker);
+		restoreNames = ReadBool(L"Uninstall", L"bRestoreNames", false);
+		logger::info("Settings: selfTest={} exclude={} staffMarker='{}' restoreNames={}", selfTest, excludeSpecs.size(), staffMarker, restoreNames);
 	}
 
 	std::unordered_set<RE::FormID> ResolveExcludedStaves(const Settings& a_settings)

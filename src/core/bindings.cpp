@@ -225,6 +225,14 @@ namespace scssc::core
 		return end == 0 ? a_spellName : a_spellName.substr(0, end);
 	}
 
+	std::string_view WithoutMarker(std::string_view a_name, std::string_view a_marker, bool a_ours)
+	{
+		if (!a_ours || a_marker.empty() || !a_name.ends_with(a_marker)) {
+			return a_name;
+		}
+		return a_name.substr(0, a_name.size() - a_marker.size());
+	}
+
 	NameRestore DecideRestore(const NameState& a_state, std::string_view a_current)
 	{
 		if (a_state.written.empty() || a_current != a_state.written) {

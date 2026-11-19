@@ -14,6 +14,9 @@ namespace scssc
 		std::string staffMarker{ " \xE2\x98\x85" };  // " ★" (U+2605, in the KS X 1001 set Korean game fonts carry; user choice 2026-11-18)
 		// "LocalFormID:Plugin.esp" staves that never take a spell, resolved once the plugins are known.
 		std::vector<std::string> excludeSpecs;
+		// [Uninstall] bRestoreNames: after a load, give every bound staff in the player's inventory its name back, clear
+		// those bindings and take no new ones, so the mod can be removed from that save (final review 2026-11-19).
+		bool restoreNames{ false };
 
 		static Settings& Get();
 		void             Load();

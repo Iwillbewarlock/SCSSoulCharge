@@ -152,7 +152,7 @@ namespace scssc::staff_art
 			if (art) {
 				g_setArt(a_caster, art);
 			}
-			logger::info("staff art: {} for {:08X} -> art {:08X}", a_id, a_item ? a_item->GetFormID() : 0u, art ? art->GetFormID() : 0u);
+			logger::debug("staff art: {} for {:08X} -> art {:08X}", a_id, a_item ? a_item->GetFormID() : 0u, art ? art->GetFormID() : 0u);
 			auto& s = g_state;
 			s.shownFor = a_item;
 			s.wait = Wait::kNone;
@@ -237,7 +237,7 @@ namespace scssc::staff_art
 				if (s.wait == Wait::kSheathed) {
 					selftest::Report("T-ART-SHEATHED", true, std::format("copy {:08X}: the engine attached its art on draw, model checked", slot->GetFormID()));
 				}
-				logger::info("staff art: on draw the engine attached the copy's art itself");
+				logger::debug("staff art: on draw the engine attached the copy's art itself");
 				s.shownFor = slot;
 				s.slotWrites = hand_slot::Writes();
 				s.wait = Wait::kNone;

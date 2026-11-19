@@ -14,6 +14,8 @@ namespace scssc::serialization
 		constexpr std::uint32_t kBindRecord = 'BIND';
 		constexpr std::uint32_t kBindRecordVersion = 1;
 		constexpr std::uint32_t kMaxRecordBytes = 4u << 20;  // far above any real table (about 1.1 KB per binding at most)
+		// New bindings stop at the table's cap, so whatever the writer saves the reader takes (Astra 2026-11-19).
+		static_assert(core::BindingTable::kMaxSerializedBytes <= kMaxRecordBytes);
 
 		// While the mod is off (unsupported runtime, a hook missing) the table is still read and written, so one save
 		// made in that state keeps every binding (reviewer 2026-11-17). Resolved, not passed through as raw bytes: SKSE

@@ -2,8 +2,10 @@
 
 #include "core/bindings.h"
 
+#include <functional>
 #include <optional>
 #include <string>
+#include <string_view>
 
 // The staff in the player's right hand as one inventory item: its record, its worn extra-data list and the engine's
 // unique id that tells two staves of the same kind apart (design 7).
@@ -25,6 +27,15 @@ namespace scssc::staff_item
 
 	// The target staff in the right hand, or empty. Never cached: lists can be rebuilt by the engine.
 	std::optional<Held> RightHand(RE::PlayerCharacter* a_player);
+
+	// The same for the left hand (its list is marked kWornLeft).
+	std::optional<Held> LeftHand(RE::PlayerCharacter* a_player);
+
+	// A staff item of record a_staff in the player's inventory that has no unique id and shows a_name, or empty.
+	std::optional<Held> FindWithoutId(RE::PlayerCharacter* a_player, RE::FormID a_staff, std::string_view a_name);
+
+	// Calls a_fn(held, key) for every staff item in the player's inventory that has a unique id.
+	void ForEachWithId(RE::PlayerCharacter* a_player, const std::function<void(const Held&, const core::StaffKey&)>& a_fn);
 
 	// The item's key, giving it a unique id first when a_assign is set (the engine's own path, which sends
 	// TESUniqueIDChangeEvent). Empty when the item has no id and none could be given.

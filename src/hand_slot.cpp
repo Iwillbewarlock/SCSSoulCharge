@@ -67,7 +67,7 @@ namespace scssc::hand_slot
 			return;
 		}
 		MoveReference(slot, a_item);
-		logger::info("hand slot: {:08X} -> {:08X}", slot ? slot->GetFormID() : 0u, a_item ? a_item->GetFormID() : 0u);
+		logger::debug("hand slot: {:08X} -> {:08X}", slot ? slot->GetFormID() : 0u, a_item ? a_item->GetFormID() : 0u);
 		slot = a_item;
 		++g_writes;
 		CountForFight();

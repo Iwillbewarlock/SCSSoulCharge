@@ -59,6 +59,10 @@ namespace scssc::core
 	public:
 		static constexpr std::uint32_t kFormatVersion = 1;
 		static constexpr std::size_t   kMaxNameBytes = 512;  // longer saved names are treated as malformed data
+		// New bindings stop here, so a table the writer saves always fits what the reader accepts (Astra 2026-11-19).
+		static constexpr std::size_t kMaxBindings = 2048;
+		static constexpr std::size_t kMaxRowBytes = 4 + 4 + 2 + 4 + 4 + (2 + kMaxNameBytes) * 2;
+		static constexpr std::size_t kMaxSerializedBytes = 8 + kMaxBindings * kMaxRowBytes;
 
 		// Same spell again clears; another spell replaces; no binding yet assigns with a_nameIfNew.
 		ToggleResult Toggle(const StaffKey& a_key, FormID a_spell, const NameState& a_nameIfNew);
@@ -72,6 +76,7 @@ namespace scssc::core
 		bool Move(const StaffKey& a_from, const StaffKey& a_to);
 
 		[[nodiscard]] std::size_t                         Size() const { return _bindings.size(); }
+		[[nodiscard]] bool                                Full() const { return _bindings.size() >= kMaxBindings; }
 		[[nodiscard]] const std::map<StaffKey, Binding>& All() const { return _bindings; }
 		void                                              Clear() { _bindings.clear(); }
 
@@ -100,6 +105,10 @@ namespace scssc::core
 	// Heart of Magic's " (Learning - 35%)" (it writes that into SpellItem::fullName while a spell is weakened, and puts
 	// the plain name back later). Without this the staff's name would keep the percentage.
 	[[nodiscard]] std::string_view SpellNameForStaff(std::string_view a_spellName);
+
+	// a_name without the staff marker, taken off only when we added it (a_ours): a spell named "Firebolt II" with the
+	// marker "II", or one another mod already ended with " ★", keeps its name (Astra 2026-11-19).
+	[[nodiscard]] std::string_view WithoutMarker(std::string_view a_name, std::string_view a_marker, bool a_ours);
 
 	// When the binding ends and the item's name is a_current now.
 	[[nodiscard]] NameRestore DecideRestore(const NameState& a_state, std::string_view a_current);

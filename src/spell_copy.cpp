@@ -1,5 +1,6 @@
 #include "spell_copy.h"
 
+#include "core/bindings.h"
 #include "selftest.h"
 #include "staff_mark.h"
 
@@ -52,7 +53,8 @@ namespace scssc::spell_copy
 				a_originalEffects.push_back(effect);
 			}
 			// Concentration effects stay on the copy and show its name (Carbon 2026-11-17); never with the staff marker.
-			copy->fullName = std::string(staff_mark::Strip(a_spell->fullName.c_str())).c_str();
+			// Without Heart of Magic's progress note too: the copy is made once a session (Carbon 2026-11-19).
+			copy->fullName = std::string(core::SpellNameForStaff(staff_mark::CleanName(a_spell))).c_str();
 			for (std::uint32_t i = 0; i < a_spell->numKeywords; ++i) {
 				if (a_spell->keywords[i]) {
 					copy->AddKeyword(a_spell->keywords[i]);  // perks that test the spell's keywords (rune, school) see them
@@ -192,6 +194,7 @@ namespace scssc::spell_copy
 		traits.ignoreLOS = spell->IgnoreLOS();
 		traits.noAbsorb = spell->GetNoAbsorb();
 		traits.hasEffects = !spell->effects.empty();
+		traits.runtimeForm = spell->IsDynamicForm();
 		return traits;
 	}
 

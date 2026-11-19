@@ -2,6 +2,8 @@
 
 #include "api.h"
 #include "copy_traits.h"
+#include "core/spell_rules.h"
+#include "effect_redirect.h"
 #include "selftest.h"
 #include "settings.h"
 #include "spell_copy.h"
@@ -55,6 +57,8 @@ namespace scssc::cast_watch
 			float                streamSecs{ 0.0f };
 			std::uint32_t        rangeAsksAtStart{ 0 };
 			std::uint32_t        castEventsAtStart{ 0 };
+			std::uint32_t        effectsAtStart{ 0 };
+			const char*          releasedBy{ "" };  // the first signal that showed the release, for the log
 			bool                 announced{ false };  // the SCST message went out for this cast
 			bool                 released{ false };
 			bool                 concentration{ false };
@@ -136,6 +140,7 @@ namespace scssc::cast_watch
 			s.startLevel = SchoolLevel(a_player, s.school);
 			s.rangeAsksAtStart = copy_traits::RangeAsks();
 			s.castEventsAtStart = g_copyCastEvents.load();
+			s.effectsAtStart = effect_redirect::CopyApplications();
 			s.concentration = a_item->GetCastingType() == RE::MagicSystem::CastingType::kConcentration;
 		}
 
@@ -215,7 +220,8 @@ namespace scssc::cast_watch
 			}
 			StaffCastMessage message{ a_s.item->GetFormID(), a_s.spell->GetFormID(), a_s.concentration ? 1u : 0u };
 			const bool sent = messaging->Dispatch(kStaffCastMessageType, &message, sizeof(message), nullptr);
-			logger::info("staff cast message: copy {:08X} spell {:08X} concentration={} ({})", message.copy, message.spell, message.concentration, sent ? "sent" : "NOT sent");
+			logger::debug("staff cast message: copy {:08X} spell {:08X} concentration={} released by {} ({})", message.copy, message.spell, message.concentration,
+				a_s.releasedBy, sent ? "sent" : "NOT sent");
 		}
 
 		void FinishHand(RE::PlayerCharacter* a_player, const Sample& a_s)
@@ -279,17 +285,23 @@ namespace scssc::cast_watch
 		s.slotChanged |= slot != s.item;
 		// One SCST message per staff cast, whatever told us it was cast (Heart of Magic counts only the message and skips
 		// the game's event for copies, 2026-11-18): the release states, the game's cast event, or magicka paid.
-		if (state == RE::MagicCaster::State::kUnk04 || state == RE::MagicCaster::State::kCasting) {
-			s.released = true;
-		}
 		if (state == RE::MagicCaster::State::kCasting && std::isfinite(a_delta) && a_delta > 0.0f) {
 			s.streamSecs += a_delta;
 		}
 		const bool ending = state == RE::MagicCaster::State::kNone;
-		if (ending && !s.hand) {
-			// Summons skip the release states (2026-11-17 16:11); the game's event (absent under DMMF) or the paid cost
-			// shows the cast instead.
-			s.released |= g_copyCastEvents.load() != s.castEventsAtStart || (s.cost >= 1.0f && s.deepestDrop >= s.cost * kPayShare);
+		// Summons can skip the release states (2026-11-17 16:11): then the game's event (absent under DMMF), an effect
+		// landing on the player, or the paid cost shows the cast. Only the release states count for a hand cast.
+		const core::ReleaseSignals signals{
+			.releaseState = state == RE::MagicCaster::State::kUnk04 || state == RE::MagicCaster::State::kCasting,
+			.castEvent = !s.hand && g_copyCastEvents.load() != s.castEventsAtStart,
+			.effectApplied = !s.hand && effect_redirect::CopyApplications() != s.effectsAtStart,
+			.paidEnough = !s.hand && ending && s.cost >= 1.0f && s.deepestDrop >= s.cost * kPayShare,
+			.otherHandCast = s.otherHandCast,
+			.slotChanged = s.slotChanged,
+		};
+		if (!s.released && core::CastReleased(signals)) {
+			s.released = true;
+			s.releasedBy = signals.releaseState ? "release state" : signals.castEvent ? "cast event" : signals.effectApplied ? "effect on the player" : "magicka paid";
 		}
 		if (s.released && !s.hand && !s.announced) {
 			s.announced = true;
