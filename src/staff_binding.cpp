@@ -1,6 +1,7 @@
 #include "staff_binding.h"
 
 #include "frame_hook.h"
+#include "hand.h"
 #include "hand_slot.h"
 #include "main_queue.h"
 #include "messages.h"
@@ -14,14 +15,16 @@
 #include <cstring>
 #include <map>
 #include <mutex>
-#include <set>
 #include <vector>
 
 namespace scssc::staff_binding
 {
 	namespace
 	{
+		// The menu's equip slots (SCS Controller.cpp:135). Only these two pick a hand; any other slot (both hands for a
+		// ritual spell, none) goes to the game as usual (Astra 2026-11-20).
 		constexpr RE::FormID kRightHandSlot = 0x13F42;
+		constexpr RE::FormID kLeftHandSlot = 0x13F43;
 
 		using MenuEquipFn = void (*)(RE::ActorEquipManager*, RE::Actor*, RE::SpellItem*, RE::BGSEquipSlot**);
 		MenuEquipFn g_previousMenuEquip = nullptr;
@@ -40,8 +43,8 @@ namespace scssc::staff_binding
 		// Set while the save swap holds the staff's own enchantment in the slot; nothing else writes the slot then.
 		std::atomic<bool> g_saving{ false };
 
-		// The held binding whose spell is not known right now, so its notice is shown once per change.
-		std::optional<core::StaffKey> g_dormant;
+		// Per hand: the held binding whose spell is not known right now, so its notice is shown once per change.
+		std::array<std::optional<core::StaffKey>, 2> g_dormant;
 
 		// What the engine had put in the hand slot for each staff before our first copy (the test build restored the
 		// slot's own value, a560bf0 testcontrols.cpp:1378). Forms, so the pointers stay valid; cleared on load.
@@ -50,7 +53,7 @@ namespace scssc::staff_binding
 		// After a load with bindings: the first copy written for a held bound staff proves the save round trip.
 		bool g_rebindPending = false;
 
-		RE::SpellItem* g_activeSpell = nullptr;  // main thread; what staff_mark marks
+		std::array<RE::SpellItem*, 2> g_activeSpell{};  // main thread, per hand; what staff_mark marks
 
 		// Why saved bindings are kept but not applied: the menu hook could not be placed (nothing could change or clear
 		// them, Astra 2026-11-19), or the [Uninstall] option runs. The staff casts its own enchantment meanwhile.
@@ -66,10 +69,6 @@ namespace scssc::staff_binding
 		// Names left by bindings whose item lost its unique id where we could not reach it (main thread, this game run):
 		// the name is taken off when the item shows up again, so a new pick does not stack "[A] [B]" (Carbon 2026-11-19).
 		std::vector<std::pair<RE::FormID, core::NameState>> g_lostNames;
-
-		// The left-hand notice is checked when the player's staves change, once per item.
-		std::uint32_t                 g_leftCheckedSeq = 0;
-		std::set<core::StaffKey>      g_leftNotified;  // each item once a game run (Astra 2026-11-19: one key repeated for A, B, A)
 
 		std::string KeyText(const core::StaffKey& a_key)
 		{
@@ -148,15 +147,14 @@ namespace scssc::staff_binding
 			}
 		}
 
-		RE::ActorMagicCaster* RightCaster(RE::PlayerCharacter* a_player)
+		std::optional<staff_item::Held> InHand(RE::PlayerCharacter* a_player, Hand a_hand)
 		{
-			auto* caster = a_player->GetMagicCaster(RE::MagicSystem::CastingSource::kRightHand);
-			return caster ? static_cast<RE::ActorMagicCaster*>(caster) : nullptr;
+			return a_hand == Hand::kRight ? staff_item::RightHand(a_player) : staff_item::LeftHand(a_player);
 		}
 
-		bool CasterIdle(RE::PlayerCharacter* a_player)
+		bool CasterIdle(RE::PlayerCharacter* a_player, Hand a_hand)
 		{
-			const auto* caster = RightCaster(a_player);
+			const auto* caster = Caster(a_player, a_hand);
 			return !caster || caster->state.underlying() == 0;
 		}
 
@@ -193,6 +191,7 @@ namespace scssc::staff_binding
 
 		struct Pick
 		{
+			Hand                          hand{ Hand::kRight };
 			RE::FormID                    spell{ 0 };
 			RE::FormID                    staff{ 0 };
 			std::optional<core::StaffKey> key;  // when the item already had an id at pick time
@@ -208,12 +207,12 @@ namespace scssc::staff_binding
 			if (g_off.load() != Off::kNo) {
 				return;
 			}
-			const auto held = staff_item::RightHand(player);
+			const auto held = InHand(player, a_pick.hand);
 			// With an id at pick time the key check below proves it is the same item; the counter only guards a staff
 			// that had none (another staff of the same kind may be in the hand now).
 			const bool sameItemUnproven = !a_pick.key && a_pick.weaponSeq != g_weaponSeq.load();
 			if (sameItemUnproven || !held || held->staff->GetFormID() != a_pick.staff) {
-				logger::info("pick {:08X} dropped: the right-hand weapon changed after it", a_pick.spell);
+				logger::info("pick {:08X} dropped: the {}-hand weapon changed after it", a_pick.spell, Name(a_pick.hand));
 				Notify(messages::Text(messages::Msg::kPickDropped));
 				return;
 			}
@@ -244,7 +243,7 @@ namespace scssc::staff_binding
 				Notify(messages::Text(messages::Msg::kTableFull, std::to_string(g_table.Size())));
 				return;
 			}
-			if (auto* caster = RightCaster(player); caster && caster->state.underlying() != 0) {
+			if (auto* caster = Caster(player, a_pick.hand); caster && caster->state.underlying() != 0) {
 				caster->InterruptCast(false);  // a menu pick cuts the running cast first (SCS Equipment.cpp:52-56)
 			}
 			if (!g_table.Find(*key)) {
@@ -263,7 +262,7 @@ namespace scssc::staff_binding
 						g_table.Find(*key)->name.written.clear();  // nothing of ours to take off later
 					}
 					selftest::Report("T-NAME", written || !fits, std::format("{} '{}' (fits={})", KeyText(*key), fresh.written, fits));
-					logger::info("binding {} <- {:08X} '{}' (name {})", KeyText(*key), spell->GetFormID(), spellName, written ? "written" : "NOT written");
+					logger::info("binding {} <- {:08X} '{}' in the {} hand (name {})", KeyText(*key), spell->GetFormID(), spellName, Name(a_pick.hand), written ? "written" : "NOT written");
 					Notify(messages::Text(messages::Msg::kNowCasts, current, spellName));
 					break;
 				}
@@ -291,24 +290,27 @@ namespace scssc::staff_binding
 					break;
 				}
 			}
-			OnFrame(player);  // the slot follows in the same frame
+			SyncHand(player, a_pick.hand);  // the slot follows in the same frame
 		}
 
 		// The picks made while the magic menu is open (the game is paused, so none applies until it closes). Only the
-		// latest counts: the 2026-11-17 test clicked Healing five times in one menu, waiting for something to happen,
-		// and the picks toggled assign/clear/assign/clear/assign. One click or five, the staff now ends up the same.
-		std::mutex          g_pickLock;
-		std::optional<Pick> g_pendingPick;
+		// latest per hand counts: the 2026-11-17 test clicked Healing five times in one menu, waiting for something to
+		// happen, and the picks toggled assign/clear/assign/clear/assign. One click or five, the staff now ends up the
+		// same. A pick for the other hand is kept beside it (Astra 2026-11-20: right A then left B kept only B).
+		std::mutex                         g_pickLock;
+		std::array<std::optional<Pick>, 2> g_pendingPick;
 
 		void ApplyPendingPick()
 		{
-			std::optional<Pick> pick;
+			std::array<std::optional<Pick>, 2> picks;
 			{
 				const std::scoped_lock lock{ g_pickLock };
-				pick.swap(g_pendingPick);
+				picks.swap(g_pendingPick);
 			}
-			if (pick) {
-				ApplyPick(*pick);
+			for (const auto& pick : picks) {
+				if (pick) {
+					ApplyPick(*pick);
+				}
 			}
 		}
 
@@ -316,7 +318,7 @@ namespace scssc::staff_binding
 		// 2026-11-18: "the marker moved only after closing and reopening the menu"). Run as a UI task, after the menu's
 		// equip callback returned, so the item list is not rebuilt under the callback that is using it. The marker goes
 		// where the pick will put the binding: off when the same spell is picked again, else on the picked spell.
-		void PreviewMark(RE::FormID a_spell)
+		void PreviewMark()
 		{
 			const auto thread = REX::W32::GetCurrentThreadId();
 			if (thread != frame_hook::MainThreadId()) {
@@ -324,14 +326,28 @@ namespace scssc::staff_binding
 				return;
 			}
 			auto*      player = RE::PlayerCharacter::GetSingleton();
-			const auto held = player ? staff_item::RightHand(player) : std::nullopt;
-			if (!held) {
+			if (!player) {
 				return;
 			}
-			const auto key = staff_item::KeyOf(player, *held, false);
-			const auto* binding = key ? g_table.Find(*key) : nullptr;
-			auto*       spell = RE::TESForm::LookupByID<RE::SpellItem>(a_spell);
-			staff_mark::OnFrame(binding && binding->spell == a_spell ? nullptr : spell);
+			// Both hands' pending picks at once: a second pick in the same menu must not hide the first one's marker
+			// (Astra 2026-11-20). A hand without a pending pick keeps what it shows.
+			std::array<std::optional<Pick>, 2> pending;
+			{
+				const std::scoped_lock lock{ g_pickLock };
+				pending = g_pendingPick;
+			}
+			auto shown = g_activeSpell;
+			for (const auto hand : kHands) {
+				const auto& pick = pending[Index(hand)];
+				const auto  held = pick ? InHand(player, hand) : std::nullopt;
+				if (!held) {
+					continue;
+				}
+				const auto  key = staff_item::KeyOf(player, *held, false);
+				const auto* binding = key ? g_table.Find(*key) : nullptr;
+				shown[Index(hand)] = binding && binding->spell == pick->spell ? nullptr : RE::TESForm::LookupByID<RE::SpellItem>(pick->spell);
+			}
+			staff_mark::OnFrame(shown[Index(Hand::kRight)], shown[Index(Hand::kLeft)]);
 			auto* ui = RE::UI::GetSingleton();
 			auto  menu = ui ? ui->GetMenu<RE::MagicMenu>() : nullptr;
 			// Only the game's own MagicMenu object has this layout; a mod that registered another class under the same
@@ -342,7 +358,7 @@ namespace scssc::staff_binding
 			if (list) {
 				list->Update();  // the engine rebuilds the entries from the spells, names included
 			}
-			logger::info("marker preview: {} for pick {:08X}, magic menu list {}", staff_mark::HeldSpell() ? "moved" : "cleared", a_spell,
+			logger::info("marker preview: right {:08X}, left {:08X}, magic menu list {}", shown[0] ? shown[0]->GetFormID() : 0u, shown[1] ? shown[1]->GetFormID() : 0u,
 				list ? "refreshed" : "not open (another menu draws it)");
 		}
 
@@ -350,9 +366,11 @@ namespace scssc::staff_binding
 		void MenuEquipThunk(RE::ActorEquipManager* a_manager, RE::Actor* a_actor, RE::SpellItem* a_spell, RE::BGSEquipSlot** a_slot)
 		{
 			auto*      player = RE::PlayerCharacter::GetSingleton();
-			const bool rightHand = a_slot && *a_slot && (*a_slot)->GetFormID() == kRightHandSlot;
+			const auto slotId = a_slot && *a_slot ? (*a_slot)->GetFormID() : 0;
+			const bool handSlot = slotId == kRightHandSlot || slotId == kLeftHandSlot;
+			const Hand hand = slotId == kLeftHandSlot ? Hand::kLeft : Hand::kRight;
 			const bool taking = g_off.load() == Off::kNo;  // the uninstall option takes no new picks
-			const auto held = taking && player && a_actor == player && a_spell && rightHand ? staff_item::RightHand(player) : std::nullopt;
+			const auto held = taking && player && a_actor == player && a_spell && handSlot ? InHand(player, hand) : std::nullopt;
 			if (!held) {
 				g_previousMenuEquip(a_manager, a_actor, a_spell, a_slot);
 				return;
@@ -375,17 +393,18 @@ namespace scssc::staff_binding
 			bool post = false;
 			{
 				const std::scoped_lock lock{ g_pickLock };
-				post = !g_pendingPick.has_value();
-				if (!post) {
-					logger::info("pick {:08X} replaces the earlier pick {:08X} made in the same menu", a_spell->GetFormID(), g_pendingPick->spell);
+				auto& pending = g_pendingPick[Index(hand)];
+				post = !g_pendingPick[0] && !g_pendingPick[1];  // one queued task applies both hands' picks
+				if (pending) {
+					logger::info("pick {:08X} replaces the earlier {} hand pick {:08X} made in the same menu", a_spell->GetFormID(), Name(hand), pending->spell);
 				}
-				g_pendingPick = Pick{ a_spell->GetFormID(), held->staff->GetFormID(), staff_item::KeyOf(player, *held, false), g_weaponSeq.load() };
+				pending = Pick{ hand, a_spell->GetFormID(), held->staff->GetFormID(), staff_item::KeyOf(player, *held, false), g_weaponSeq.load() };
 			}
 			if (post) {
 				main_queue::Post(ApplyPendingPick);
 			}
 			if (auto* tasks = SKSE::GetTaskInterface()) {
-				tasks->AddUITask([spell = a_spell->GetFormID()] { PreviewMark(spell); });
+				tasks->AddUITask([] { PreviewMark(); });
 			}
 		}
 
@@ -422,26 +441,6 @@ namespace scssc::staff_binding
 			}
 		};
 		EquipSink g_equipSink;
-
-		// A bound staff in the left hand casts its own enchantment (only the right hand's slot is managed): say so once
-		// per item, checked when the player's staves change (Opus 2026-11-19).
-		void CheckLeftHand(RE::PlayerCharacter* a_player)
-		{
-			if (g_off.load() != Off::kNo) {
-				return;  // the right hand casts its own enchantment too then: the notice would be wrong
-			}
-			const auto seq = g_weaponSeq.load();
-			if (seq == g_leftCheckedSeq) {
-				return;
-			}
-			g_leftCheckedSeq = seq;
-			const auto left = staff_item::LeftHand(a_player);
-			const auto key = left ? staff_item::KeyOf(a_player, *left, false) : std::nullopt;
-			if (!key || !g_table.Find(*key) || !g_leftNotified.insert(*key).second) {
-				return;
-			}
-			Notify(messages::Text(messages::Msg::kLeftHand, staff_item::DisplayName(*left)));
-		}
 
 		// [Uninstall] bRestoreNames: every bound staff the player carries gets its name back and loses its binding.
 		// Bindings of staves elsewhere (chests, followers) stay in the table: their names cannot be reached from here.
@@ -492,20 +491,20 @@ namespace scssc::staff_binding
 		logger::info("Hook installed: magic menu spell equip call (chained after {:X})", reinterpret_cast<std::uintptr_t>(g_previousMenuEquip));
 	}
 
-	bool OnFrame(RE::PlayerCharacter* a_player)
+	// One hand (declared in staff_binding.h for ApplyPick): put the bound copy in its slot, or the staff's own enchantment back. Whether a target staff is there.
+	bool SyncHand(RE::PlayerCharacter* a_player, Hand a_hand)
 	{
-		ApplyPendingMoves();
-		CheckLeftHand(a_player);
-		g_activeSpell = nullptr;
-		const auto held = staff_item::RightHand(a_player);
+		g_activeSpell[Index(a_hand)] = nullptr;
+		const auto held = InHand(a_player, a_hand);
 		if (g_saving.load()) {
 			return held.has_value();
 		}
-		auto* const slot = hand_slot::Current(a_player);
-		const bool  idle = CasterIdle(a_player);
+		auto* const slot = hand_slot::Current(a_player, a_hand);
+		const bool  idle = CasterIdle(a_player, a_hand);
 		if (!held) {
+			g_dormant[Index(a_hand)].reset();  // moved to the other hand or put away: its notice may come again there (Opus)
 			if (spell_copy::IsCopy(slot) && idle) {
-				hand_slot::Write(a_player, nullptr);  // the staff left the hand without the engine rewriting the slot
+				hand_slot::Write(a_player, a_hand, nullptr);  // the staff left the hand without the engine rewriting the slot
 			}
 			return false;
 		}
@@ -526,20 +525,21 @@ namespace scssc::staff_binding
 		// Not known right now (Heart of Magic takes spells away while it swaps or re-locks a learning target): the
 		// binding stays, the staff casts its own enchantment, and the spell comes back by itself (user 2026-11-17).
 		const bool dormant = state == core::HeldBinding::kDormant;
-		if (dormant != (g_dormant == key)) {
+		auto&      dormantKey = g_dormant[Index(a_hand)];
+		if (dormant != (dormantKey == key)) {
 			if (dormant) {
-				g_dormant = key;
+				dormantKey = key;
 				logger::info("binding {} dormant: spell {:08X} is not known now", KeyText(*key), binding->spell);
 				Notify(messages::Text(messages::Msg::kDormant, staff_item::DisplayName(*held)));
-			} else if (g_dormant && g_dormant == key) {
-				g_dormant.reset();
+			} else if (dormantKey && dormantKey == key) {
+				dormantKey.reset();
 				logger::info("binding {} active again", KeyText(*key));
 			}
 		}
 		RE::MagicItem* wanted = nullptr;
 		bool           restoreOwn = false;
 		if (binding && !dormant) {
-			g_activeSpell = spell;
+			g_activeSpell[Index(a_hand)] = spell;
 			wanted = spell_copy::Get(spell);  // null only when the form factory failed: the slot is left alone then
 		} else if (spell_copy::IsCopy(slot)) {
 			wanted = OwnFor(*held, key);  // null for a staff without an enchantment: the slot is emptied
@@ -551,14 +551,24 @@ namespace scssc::staff_binding
 			if (!restoreOwn) {
 				RememberEngineOwn(*held, *key, slot);
 			}
-			hand_slot::Write(a_player, wanted);
+			hand_slot::Write(a_player, a_hand, wanted);
 			if (!restoreOwn && g_rebindPending) {
 				g_rebindPending = false;
-				selftest::Report("T-SAVE-REBIND", hand_slot::Current(a_player) == wanted,
-					std::format("{} got copy {:08X} of {:08X} after the load", KeyText(*key), wanted->GetFormID(), spell->GetFormID()));
+				selftest::Report("T-SAVE-REBIND", hand_slot::Current(a_player, a_hand) == wanted,
+					std::format("{} in the {} hand got copy {:08X} of {:08X} after the load", KeyText(*key), Name(a_hand), wanted->GetFormID(), spell->GetFormID()));
 			}
 		}
 		return true;
+	}
+
+	HandsHeld OnFrame(RE::PlayerCharacter* a_player)
+	{
+		ApplyPendingMoves();
+		HandsHeld held{};
+		for (const auto hand : kHands) {
+			held[Index(hand)] = SyncHand(a_player, hand);
+		}
+		return held;
 	}
 
 	void OnSave(std::uint32_t a_mainThread)
@@ -571,35 +581,59 @@ namespace scssc::staff_binding
 			ApplyPendingPick();
 		}
 		auto* player = RE::PlayerCharacter::GetSingleton();
-		auto* copy = player ? hand_slot::Current(player) : nullptr;
-		if (!spell_copy::IsCopy(copy)) {
+		if (!player) {
 			return;
 		}
-		// kSaveGame arrives before the save is written, synchronously, so this cannot wait for the queue. A raw write:
-		// the copy keeps its preload reference until it gets the slot back (design 5, exception for the save).
-		const auto held = staff_item::RightHand(player);
-		const auto key = held ? staff_item::KeyOf(player, *held, false) : std::nullopt;
-		auto*      own = held ? OwnFor(*held, key) : nullptr;
-		hand_slot::WriteRaw(player, own);
+		// kSaveGame arrives before the save is written, synchronously, so this cannot wait for the queue. Raw writes:
+		// each copy keeps its preload reference until it gets its slot back (design 5, exception for the save). One task
+		// puts both hands back (Astra 2026-11-20: one copy may sit in both slots, each with its own reference).
+		struct Swap
+		{
+			RE::MagicItem* copy{ nullptr };
+			RE::MagicItem* own{ nullptr };
+		};
+		std::array<Swap, 2> swaps{};
+		bool                swapped = false;
+		for (const auto hand : kHands) {
+			auto* copy = hand_slot::Current(player, hand);
+			if (!spell_copy::IsCopy(copy)) {
+				continue;
+			}
+			const auto held = InHand(player, hand);
+			const auto key = held ? staff_item::KeyOf(player, *held, false) : std::nullopt;
+			auto*      own = held ? OwnFor(*held, key) : nullptr;
+			hand_slot::WriteRaw(player, hand, own);
+			swaps[Index(hand)] = { copy, own };
+			swapped = true;
+			logger::info("save: {} hand slot {:08X} -> {:08X} while the save is written", Name(hand), copy->GetFormID(), own ? own->GetFormID() : 0u);
+		}
+		if (!swapped) {
+			return;
+		}
 		g_saving = true;
-		logger::info("save: hand slot {:08X} -> {:08X} while the save is written", copy->GetFormID(), own ? own->GetFormID() : 0u);
-		main_queue::Post([copy, own] {
+		main_queue::Post([swaps] {
 			g_saving = false;
 			auto* player = RE::PlayerCharacter::GetSingleton();
 			if (!player) {
 				return;
 			}
-			if (hand_slot::Current(player) == own) {
-				hand_slot::WriteRaw(player, copy);  // the copy still holds its preload reference
-				logger::info("save: hand slot back to {:08X}", copy->GetFormID());
-				OnFrame(player);  // the binding may have changed meanwhile: the usual path fixes the slot
-			} else {
-				// The engine set the slot itself: its setter preloaded the new item and released own, which had no
-				// reference of ours left (our first copy write released it). Give own one back and drop the copy's.
-				hand_slot::MoveReference(copy, own);
-				logger::info("save: the slot changed during the save ({:08X}); copy {:08X} released, own {:08X} re-preloaded",
-					hand_slot::Current(player) ? hand_slot::Current(player)->GetFormID() : 0u, copy->GetFormID(), own ? own->GetFormID() : 0u);
+			for (const auto hand : kHands) {
+				const auto& [copy, own] = swaps[Index(hand)];
+				if (!copy) {
+					continue;
+				}
+				if (hand_slot::Current(player, hand) == own) {
+					hand_slot::WriteRaw(player, hand, copy);  // the copy still holds this slot's preload reference
+					logger::info("save: {} hand slot back to {:08X}", Name(hand), copy->GetFormID());
+				} else {
+					// The engine set the slot itself: its setter preloaded the new item and released own, which had no
+					// reference of ours left (our first copy write released it). Give own one back and drop the copy's.
+					hand_slot::MoveReference(copy, own);
+					logger::info("save: the {} hand slot changed during the save; copy {:08X} released, own {:08X} re-preloaded", Name(hand), copy->GetFormID(),
+						own ? own->GetFormID() : 0u);
+				}
 			}
+			OnFrame(player);  // the bindings may have changed meanwhile: the usual path fixes both slots
 		});
 	}
 
@@ -608,7 +642,7 @@ namespace scssc::staff_binding
 		// A load right after a save drops the queued put-back (main_queue generation): its copy keeps one preload
 		// reference, which only keeps its models loaded.
 		g_saving = false;
-		g_dormant.reset();
+		g_dormant = {};
 		g_engineOwn.clear();
 		{
 			const std::scoped_lock lock{ g_moveLock };
@@ -616,10 +650,9 @@ namespace scssc::staff_binding
 		}
 		g_rebindPending = false;
 		g_lostNames.clear();  // names of the game being left
-		g_leftNotified.clear();
 		g_weaponSeq.fetch_add(1);
 		const std::scoped_lock lock{ g_pickLock };
-		g_pendingPick.reset();  // its queued task was dropped with the old generation: the next pick must post again
+		g_pendingPick = {};  // its queued task was dropped with the old generation: the next pick must post again
 	}
 
 	void OnLoaded(std::size_t a_bindings)
@@ -664,8 +697,8 @@ namespace scssc::staff_binding
 		return g_table;
 	}
 
-	RE::SpellItem* ActiveSpell()
+	RE::SpellItem* ActiveSpell(Hand a_hand)
 	{
-		return g_activeSpell;
+		return g_activeSpell[Index(a_hand)];
 	}
 }

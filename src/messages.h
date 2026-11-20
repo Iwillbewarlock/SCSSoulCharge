@@ -27,7 +27,6 @@ namespace scssc::messages
 		kReasonNoEffects,
 		kDormant,         // {0} staff
 		kSpellGone,       // {0} staff
-		kLeftHand,        // {0} staff
 		kTableFull,       // {0} bindings
 		kOffRuntime,      // {0} game version
 		kOffHook,

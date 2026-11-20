@@ -79,12 +79,14 @@ namespace scssc::frame_hook
 			}
 			const auto start = std::chrono::steady_clock::now();
 			main_queue::Drain();
-			const bool staffHeld = staff_binding::OnFrame(player);
-			staff_mark::OnFrame(staff_binding::ActiveSpell());
+			const auto held = staff_binding::OnFrame(player);
+			staff_mark::OnFrame(staff_binding::ActiveSpell(Hand::kRight), staff_binding::ActiveSpell(Hand::kLeft));
 			const float delta = FrameDelta();
-			staff_art::OnFrame(player, delta, staffHeld);
+			for (const auto hand : kHands) {
+				staff_art::OnFrame(player, delta, hand, held[Index(hand)]);
+			}
 			cast_watch::OnFrame(player, delta);
-			Measure(start, delta, staffHeld);
+			Measure(start, delta, held[0] || held[1]);
 		}
 
 		std::size_t FrameCallOffset()

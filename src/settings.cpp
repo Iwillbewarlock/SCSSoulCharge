@@ -73,14 +73,24 @@ namespace scssc
 	void Settings::Load()
 	{
 		selfTest = ReadBool(L"SelfTest", L"bEnabled", false);
-		if (!ReadBool(L"Display", L"bStaffMarker", true)) {
-			staffMarker.clear();
-		} else if (const auto custom = ReadList(L"Display", L"sStaffMarker"); !custom.empty()) {
-			staffMarker = " " + custom.front();  // the INI cannot hold a leading space: one is put back
+		staffMarkerOn = ReadBool(L"Display", L"bStaffMarker", true);
+		if (!staffMarkerOn) {
+			staffMarkerRight.clear();
+			staffMarkerLeft.clear();
+		} else {
+			// The INI cannot hold a leading space: one is put back.
+			if (const auto custom = ReadList(L"Display", L"sStaffMarkerRight"); !custom.empty()) {
+				staffMarkerRight = " " + custom.front();
+			}
+			if (const auto custom = ReadList(L"Display", L"sStaffMarkerLeft"); !custom.empty()) {
+				staffMarkerLeft = " " + custom.front();
+			}
 		}
+		staffMarkerBoth = staffMarkerRight + staffMarkerLeft;
 		excludeSpecs = ReadList(L"Staves", L"sExclude");
 		restoreNames = ReadBool(L"Uninstall", L"bRestoreNames", false);
-		logger::info("Settings: selfTest={} exclude={} staffMarker='{}' restoreNames={}", selfTest, excludeSpecs.size(), staffMarker, restoreNames);
+		logger::info("Settings: selfTest={} exclude={} staffMarker='{}'/'{}' restoreNames={}", selfTest, excludeSpecs.size(), staffMarkerRight, staffMarkerLeft,
+			restoreNames);
 	}
 
 	std::unordered_set<RE::FormID> ResolveExcludedStaves(const Settings& a_settings)

@@ -2,6 +2,8 @@
 
 #include "selftest.h"
 
+#include <array>
+
 #include <chrono>
 
 namespace scssc::hand_slot
@@ -14,31 +16,36 @@ namespace scssc::hand_slot
 		using ReleaseFn = void (*)(RE::MagicItem*, bool);
 		PreloadFn     g_preload = nullptr;
 		ReleaseFn     g_release = nullptr;
-		std::uint32_t g_writes = 0;  // main thread only
+		std::array<std::uint32_t, 2> g_writes{};  // main thread only, per hand
 
 		// More than this many slot changes within one second means something rewrites the slot against us.
 		constexpr std::uint32_t kFightWrites = 10;
-		std::uint64_t           g_windowStartMs = 0;
-		std::uint32_t           g_windowWrites = 0;
-		bool                    g_fightReported = false;
-
-		void CountForFight()
+		struct FightWindow
 		{
+			std::uint64_t startMs{ 0 };
+			std::uint32_t writes{ 0 };
+			bool          reported{ false };
+		};
+		std::array<FightWindow, 2> g_fight{};
+
+		void CountForFight(Hand a_hand)
+		{
+			auto&      w = g_fight[Index(a_hand)];
 			const auto now = static_cast<std::uint64_t>(
 				std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
-			if (now - g_windowStartMs > 1000) {
-				g_windowStartMs = now;
-				g_windowWrites = 0;
+			if (now - w.startMs > 1000) {
+				w.startMs = now;
+				w.writes = 0;
 			}
-			if (++g_windowWrites > kFightWrites && !g_fightReported) {
-				g_fightReported = true;
-				selftest::Report("T-DRAW", false, std::format("{} hand slot writes within one second: something else keeps changing the slot", g_windowWrites));
+			if (++w.writes > kFightWrites && !w.reported) {
+				w.reported = true;
+				selftest::Report("T-DRAW", false, std::format("{} {} hand slot writes within one second: something else keeps changing the slot", w.writes, Name(a_hand)));
 			}
 		}
 
-		RE::MagicItem*& Slot(RE::PlayerCharacter* a_player)
+		RE::MagicItem*& Slot(RE::PlayerCharacter* a_player, Hand a_hand)
 		{
-			return a_player->GetActorRuntimeData().selectedSpells[RE::Actor::SlotTypes::kRightHand];
+			return a_player->GetActorRuntimeData().selectedSpells[SlotType(a_hand)];
 		}
 	}
 
@@ -55,32 +62,32 @@ namespace scssc::hand_slot
 		return true;
 	}
 
-	RE::MagicItem* Current(RE::PlayerCharacter* a_player)
+	RE::MagicItem* Current(RE::PlayerCharacter* a_player, Hand a_hand)
 	{
-		return a_player ? Slot(a_player) : nullptr;
+		return a_player ? Slot(a_player, a_hand) : nullptr;
 	}
 
-	void Write(RE::PlayerCharacter* a_player, RE::MagicItem* a_item)
+	void Write(RE::PlayerCharacter* a_player, Hand a_hand, RE::MagicItem* a_item)
 	{
-		auto& slot = Slot(a_player);
+		auto& slot = Slot(a_player, a_hand);
 		if (slot == a_item) {
 			return;
 		}
 		MoveReference(slot, a_item);
-		logger::debug("hand slot: {:08X} -> {:08X}", slot ? slot->GetFormID() : 0u, a_item ? a_item->GetFormID() : 0u);
+		logger::debug("hand slot {}: {:08X} -> {:08X}", Name(a_hand), slot ? slot->GetFormID() : 0u, a_item ? a_item->GetFormID() : 0u);
 		slot = a_item;
-		++g_writes;
-		CountForFight();
+		++g_writes[Index(a_hand)];
+		CountForFight(a_hand);
 	}
 
-	std::uint32_t Writes()
+	std::uint32_t Writes(Hand a_hand)
 	{
-		return g_writes;
+		return g_writes[Index(a_hand)];
 	}
 
-	void WriteRaw(RE::PlayerCharacter* a_player, RE::MagicItem* a_item)
+	void WriteRaw(RE::PlayerCharacter* a_player, Hand a_hand, RE::MagicItem* a_item)
 	{
-		Slot(a_player) = a_item;
+		Slot(a_player, a_hand) = a_item;
 	}
 
 	void MoveReference(RE::MagicItem* a_from, RE::MagicItem* a_to)

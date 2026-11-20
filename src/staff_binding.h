@@ -1,9 +1,12 @@
 #pragma once
 
 #include "core/bindings.h"
+#include "hand.h"
 
-// Picking a spell for the held staff from the magic menu, and keeping the hand slot on the staff's spell copy
-// (design 3, 5, 7, 8). All engine changes run on the main thread (main_queue, frame hook).
+#include <array>
+
+// Picking a spell for a held staff from the magic menu, and keeping each hand's slot on its staff's spell copy
+// (design 3, 5, 7, 8; both hands since 2026-11-20). All engine changes run on the main thread (main_queue, frame hook).
 
 namespace scssc::staff_binding
 {
@@ -12,11 +15,17 @@ namespace scssc::staff_binding
 	// When the call site is not a plain CALL, bindings stay saved but are not applied (no way to change them).
 	void InstallMenuHook();
 
-	// Main thread, every unpaused frame: put the bound copy in the hand slot, or the staff's own enchantment back.
-	// Returns whether a target staff is in the right hand.
-	bool OnFrame(RE::PlayerCharacter* a_player);
+	// Whether a target staff is in each hand (index: Index(Hand)).
+	using HandsHeld = std::array<bool, 2>;
 
-	// kSaveGame: the slot holds the staff's own enchantment while the save is written (T-SAVE), put back after.
+	// Main thread, every unpaused frame: for each hand, put the bound copy in its slot, or the staff's own enchantment
+	// back.
+	HandsHeld OnFrame(RE::PlayerCharacter* a_player);
+
+	// The same for one hand (after a pick). Returns whether a target staff is in that hand.
+	bool SyncHand(RE::PlayerCharacter* a_player, Hand a_hand);
+
+	// kSaveGame: each slot holds its staff's own enchantment while the save is written (T-SAVE), put back after.
 	// a_mainThread: the frame hook's thread id (0 = not seen yet), for T-THREAD.
 	void OnSave(std::uint32_t a_mainThread);
 
@@ -41,6 +50,6 @@ namespace scssc::staff_binding
 	// The [Uninstall] run, at once, for kPostLoadGame while the mod is off (a hook failed on the supported runtime).
 	void RunUninstallNow();
 
-	// The bound spell of the staff in the right hand as of the last frame, or null (none, or not known right now).
-	RE::SpellItem* ActiveSpell();
+	// The bound spell of the staff in that hand as of the last frame, or null (none, or not known right now).
+	RE::SpellItem* ActiveSpell(Hand a_hand);
 }

@@ -4,11 +4,14 @@
 #include "copy_traits.h"
 #include "core/spell_rules.h"
 #include "effect_redirect.h"
+#include "hand.h"
 #include "selftest.h"
 #include "settings.h"
 #include "spell_copy.h"
 
 #include <atomic>
+#include <mutex>
+#include <unordered_map>
 
 namespace scssc::cast_watch
 {
@@ -22,8 +25,16 @@ namespace scssc::cast_watch
 		constexpr float kDrainTolerance = 0.05f;                        // T-COST: a single shot drains the hand cost within 5 %
 		constexpr float kXpCheckSecs = 1.0f;                            // the granted experience is read again after this
 
-		// Player casts of a staff copy, counted by the game's own spell-cast event.
-		std::atomic<std::uint32_t> g_copyCastEvents{ 0 };
+		// Player casts of each staff copy, counted by the game's own spell-cast event (it names no hand).
+		std::mutex                                 g_castEventLock;
+		std::unordered_map<RE::FormID, std::uint32_t> g_copyCastEvents;
+
+		std::uint32_t CastEventsOf(const RE::MagicItem* a_item)
+		{
+			const std::scoped_lock lock{ g_castEventLock };
+			const auto it = a_item ? g_copyCastEvents.find(a_item->GetFormID()) : g_copyCastEvents.end();
+			return it == g_copyCastEvents.end() ? 0 : it->second;
+		}
 
 		struct XpCheck
 		{
@@ -42,7 +53,8 @@ namespace scssc::cast_watch
 		struct Sample
 		{
 			bool                 active{ false };
-			bool                 hand{ false };  // a hand cast of a plain spell, watched only for the T-XP comparison
+			bool                 plain{ false };  // a cast of a plain spell from the hand, watched only for the T-XP comparison
+			Hand                 side{ Hand::kRight };
 			const RE::MagicItem* item{ nullptr };
 			RE::SpellItem*       spell{ nullptr };  // the copy's original, or the hand spell
 			RE::ActorValue       school{ RE::ActorValue::kNone };
@@ -58,14 +70,16 @@ namespace scssc::cast_watch
 			std::uint32_t        rangeAsksAtStart{ 0 };
 			std::uint32_t        castEventsAtStart{ 0 };
 			std::uint32_t        effectsAtStart{ 0 };
+			std::uint32_t        unhandedEffectsAtStart{ 0 };
 			const char*          releasedBy{ "" };  // the first signal that showed the release, for the log
 			bool                 announced{ false };  // the SCST message went out for this cast
 			bool                 released{ false };
 			bool                 concentration{ false };
-			bool                 otherHandCast{ false };  // the left hand spent magicka too: the drop is not ours alone
+			bool                 otherHandCast{ false };  // the other hand cast too: the drop is not ours alone
+			bool                 sharedCopy{ false };     // the other hand cast the same copy during this sample: its event is not ours
 			bool                 slotChanged{ false };
 		};
-		Sample g_sample;
+		std::array<Sample, 2> g_samples;  // per hand
 
 		float Value(RE::PlayerCharacter* a_player, RE::ActorValue a_value)
 		{
@@ -123,24 +137,26 @@ namespace scssc::cast_watch
 			return caster ? caster->state.get() : RE::MagicCaster::State::kNone;
 		}
 
-		void Start(RE::PlayerCharacter* a_player, RE::MagicItem* a_item, RE::SpellItem* a_spell, bool a_hand)
+		void Start(RE::PlayerCharacter* a_player, Hand a_side, RE::MagicItem* a_item, RE::SpellItem* a_spell, bool a_plain)
 		{
-			auto& s = g_sample;
+			auto& s = g_samples[Index(a_side)];
 			s = {};
 			s.active = true;
-			s.hand = a_hand;
+			s.plain = a_plain;
+			s.side = a_side;
 			s.item = a_item;
 			s.spell = a_spell;
 			s.school = a_spell->GetAssociatedSkill();
 			s.cost = a_item->CalculateMagickaCost(a_player);
 			s.startMagicka = Value(a_player, RE::ActorValue::kMagicka);
 			s.peakMagicka = s.startMagicka;
-			s.startCharge = Value(a_player, RE::ActorValue::kRightItemCharge);
+			s.startCharge = Value(a_player, ChargeValue(a_side));
 			s.startXp = SchoolXp(a_player, s.school);
 			s.startLevel = SchoolLevel(a_player, s.school);
 			s.rangeAsksAtStart = copy_traits::RangeAsks();
-			s.castEventsAtStart = g_copyCastEvents.load();
-			s.effectsAtStart = effect_redirect::CopyApplications();
+			s.castEventsAtStart = CastEventsOf(a_item);
+			s.effectsAtStart = effect_redirect::CopyApplications(a_side);
+			s.unhandedEffectsAtStart = effect_redirect::CopyApplicationsWithoutHand();
 			s.concentration = a_item->GetCastingType() == RE::MagicSystem::CastingType::kConcentration;
 		}
 
@@ -159,7 +175,7 @@ namespace scssc::cast_watch
 				return "god mode (tgm) pays nothing";
 			}
 			if (a_s.otherHandCast) {
-				return "the left hand cast at the same time";
+				return "the other hand cast at the same time";
 			}
 			if (a_s.startMagicka < a_s.cost) {
 				return "magicka at the start was below the cost";
@@ -177,12 +193,12 @@ namespace scssc::cast_watch
 			if (g_xpCheck.active || !a_s.released || a_s.slotChanged || a_s.otherHandCast || a_s.school == RE::ActorValue::kNone) {
 				return;  // another cast's check is running, or the left hand may train the same school: not judged
 			}
-			g_xpCheck = { true, a_s.school, a_s.startXp, a_s.startLevel, 0.0f, g_clock + kXpCheckSecs, a_s.item->GetFormID(), a_s.hand };
+			g_xpCheck = { true, a_s.school, a_s.startXp, a_s.startLevel, 0.0f, g_clock + kXpCheckSecs, a_s.item->GetFormID(), a_s.plain };
 		}
 
 		void FinishCopy(RE::PlayerCharacter* a_player, const Sample& a_s)
 		{
-			const auto detail = std::format("copy {:08X} cost {:.2f}{}: deepest magicka drop {:.2f}, staff charge change {:.2f}", a_s.item->GetFormID(), a_s.cost,
+			const auto detail = std::format("{} hand copy {:08X} cost {:.2f}{}: deepest magicka drop {:.2f}, staff charge change {:.2f}", Name(a_s.side), a_s.item->GetFormID(), a_s.cost,
 				a_s.concentration ? std::format(" per second over {:.2f} s", a_s.streamSecs) : std::string{}, a_s.deepestDrop, a_s.largestChargeChange);
 			if (const auto* reason = SkipReason(a_s)) {
 				selftest::Skip("T-PAY", std::format("{} ({})", detail, reason));
@@ -218,10 +234,10 @@ namespace scssc::cast_watch
 			if (!messaging) {
 				return;
 			}
-			StaffCastMessage message{ a_s.item->GetFormID(), a_s.spell->GetFormID(), a_s.concentration ? 1u : 0u };
+			StaffCastMessage message{ a_s.item->GetFormID(), a_s.spell->GetFormID(), a_s.concentration ? 1u : 0u, static_cast<std::uint32_t>(Index(a_s.side)) };
 			const bool sent = messaging->Dispatch(kStaffCastMessageType, &message, sizeof(message), nullptr);
-			logger::debug("staff cast message: copy {:08X} spell {:08X} concentration={} released by {} ({})", message.copy, message.spell, message.concentration,
-				a_s.releasedBy, sent ? "sent" : "NOT sent");
+			logger::debug("staff cast message: {} hand copy {:08X} spell {:08X} concentration={} released by {} ({})", Name(a_s.side), message.copy, message.spell,
+				message.concentration, a_s.releasedBy, sent ? "sent" : "NOT sent");
 		}
 
 		void FinishHand(RE::PlayerCharacter* a_player, const Sample& a_s)
@@ -232,7 +248,7 @@ namespace scssc::cast_watch
 
 	void Reset()
 	{
-		g_sample = {};
+		g_samples = {};
 		g_xpCheck = {};
 	}
 
@@ -243,7 +259,8 @@ namespace scssc::cast_watch
 			RE::BSEventNotifyControl ProcessEvent(const RE::TESSpellCastEvent* a_event, RE::BSTEventSource<RE::TESSpellCastEvent>*) override
 			{
 				if (a_event && a_event->object && a_event->object->IsPlayerRef() && spell_copy::IsCopy(RE::TESForm::LookupByID<RE::MagicItem>(a_event->spell))) {
-					g_copyCastEvents.fetch_add(1);
+					const std::scoped_lock lock{ g_castEventLock };
+					++g_copyCastEvents[a_event->spell];
 				}
 				return RE::BSEventNotifyControl::kContinue;
 			}
@@ -254,66 +271,88 @@ namespace scssc::cast_watch
 		}
 	}
 
+	namespace
+	{
+		void WatchHand(RE::PlayerCharacter* a_player, Hand a_side, float a_delta)
+		{
+			auto* const slot = a_player->GetActorRuntimeData().selectedSpells[SlotType(a_side)];
+			const auto  state = StateOf(a_player, Source(a_side));
+			auto&       s = g_samples[Index(a_side)];
+			if (!s.active) {
+				if (state == RE::MagicCaster::State::kNone || !slot) {
+					return;
+				}
+				if (auto* original = spell_copy::OriginalOf(slot)) {
+					Start(a_player, a_side, slot, original, false);
+				} else if (auto* handSpell = slot->As<RE::SpellItem>(); handSpell && Settings::Get().selfTest) {
+					Start(a_player, a_side, slot, handSpell, true);
+				}
+				if (!s.active) {
+					return;
+				}
+				// No return here: a shot that starts and releases in one frame is still seen as released (Carbon 2026-11-17).
+			}
+			const float magicka = Value(a_player, RE::ActorValue::kMagicka);
+			s.peakMagicka = std::max(s.peakMagicka, magicka);
+			s.deepestDrop = std::max(s.deepestDrop, s.peakMagicka - magicka);
+			s.largestChargeChange = std::max(s.largestChargeChange, std::fabs(Value(a_player, ChargeValue(a_side)) - s.startCharge));
+			s.otherHandCast |= StateOf(a_player, Source(Other(a_side))) != RE::MagicCaster::State::kNone;
+			s.slotChanged |= slot != s.item;
+			if (state == RE::MagicCaster::State::kCasting && std::isfinite(a_delta) && a_delta > 0.0f) {
+				s.streamSecs += a_delta;
+			}
+			const bool ending = state == RE::MagicCaster::State::kNone;
+			// One SCST message per staff cast, whatever told us it was cast (Heart of Magic counts only the message and
+			// skips the game's event for copies, 2026-11-18). Summons can skip the release states (2026-11-17 16:11): then
+			// the game's event (absent under DMMF), an effect from this hand landing on the player, or the paid cost shows
+			// the cast. Each sign belongs to this hand (Astra 2026-11-20): the game's event names no hand, so it does not
+			// count while the other hand casts the same copy. Only the release states count for a plain hand cast.
+			// Kept for the whole sample, not only while the other hand still casts (Astra 2026-11-20).
+			// From the other hand's live state and slot, so the order the hands are watched in does not matter (Opus
+			// 2026-11-20: a left instant cast before the left sample opened was counted for the right hand).
+			const auto otherSide = Other(a_side);
+			s.sharedCopy |= StateOf(a_player, Source(otherSide)) != RE::MagicCaster::State::kNone &&
+			                a_player->GetActorRuntimeData().selectedSpells[SlotType(otherSide)] == s.item;
+			const bool eventIsOurs = !s.sharedCopy;
+			// An effect the engine gave no hand (casting source other / instant) counts for this hand unless the other
+			// hand casts the same copy: the 8dd065d build counted every source, and summons may land that way (Opus).
+			const bool handEffect = effect_redirect::CopyApplications(a_side) != s.effectsAtStart;
+			const bool otherEffect = !s.sharedCopy && effect_redirect::CopyApplicationsWithoutHand() != s.unhandedEffectsAtStart;
+			const core::ReleaseSignals signals{
+				.releaseState = state == RE::MagicCaster::State::kUnk04 || state == RE::MagicCaster::State::kCasting,
+				.castEvent = !s.plain && eventIsOurs && CastEventsOf(s.item) != s.castEventsAtStart,
+				.effectApplied = !s.plain && (handEffect || otherEffect),
+				.paidEnough = !s.plain && ending && s.cost >= 1.0f && s.deepestDrop >= s.cost * kPayShare,
+				.otherHandCast = s.otherHandCast,
+				.slotChanged = s.slotChanged,
+			};
+			if (!s.released && core::CastReleased(signals)) {
+				s.released = true;
+				s.releasedBy = signals.releaseState ? "release state" : signals.castEvent ? "cast event" : signals.effectApplied ? "effect on the player" : "magicka paid";
+			}
+			if (s.released && !s.plain && !s.announced) {
+				s.announced = true;
+				AnnounceStaffCast(s);
+			}
+			if (ending) {
+				s.active = false;
+				if (s.plain) {
+					FinishHand(a_player, s);
+				} else {
+					FinishCopy(a_player, s);
+				}
+			}
+		}
+	}
+
 	void OnFrame(RE::PlayerCharacter* a_player, float a_delta)
 	{
 		if (std::isfinite(a_delta) && a_delta > 0.0f) {
 			g_clock += a_delta;
 		}
 		JudgeXp(a_player);
-		auto* const slot = a_player->GetActorRuntimeData().selectedSpells[RE::Actor::SlotTypes::kRightHand];
-		const auto  state = StateOf(a_player, RE::MagicSystem::CastingSource::kRightHand);
-		auto&       s = g_sample;
-		if (!s.active) {
-			if (state == RE::MagicCaster::State::kNone || !slot) {
-				return;
-			}
-			if (auto* original = spell_copy::OriginalOf(slot)) {
-				Start(a_player, slot, original, false);
-			} else if (auto* handSpell = slot->As<RE::SpellItem>(); handSpell && Settings::Get().selfTest) {
-				Start(a_player, slot, handSpell, true);
-			}
-			if (!s.active) {
-				return;
-			}
-			// No return here: a shot that starts and releases in one frame is still seen as released (Carbon 2026-11-17).
-		}
-		const float magicka = Value(a_player, RE::ActorValue::kMagicka);
-		s.peakMagicka = std::max(s.peakMagicka, magicka);
-		s.deepestDrop = std::max(s.deepestDrop, s.peakMagicka - magicka);
-		s.largestChargeChange = std::max(s.largestChargeChange, std::fabs(Value(a_player, RE::ActorValue::kRightItemCharge) - s.startCharge));
-		s.otherHandCast |= StateOf(a_player, RE::MagicSystem::CastingSource::kLeftHand) != RE::MagicCaster::State::kNone;
-		s.slotChanged |= slot != s.item;
-		// One SCST message per staff cast, whatever told us it was cast (Heart of Magic counts only the message and skips
-		// the game's event for copies, 2026-11-18): the release states, the game's cast event, or magicka paid.
-		if (state == RE::MagicCaster::State::kCasting && std::isfinite(a_delta) && a_delta > 0.0f) {
-			s.streamSecs += a_delta;
-		}
-		const bool ending = state == RE::MagicCaster::State::kNone;
-		// Summons can skip the release states (2026-11-17 16:11): then the game's event (absent under DMMF), an effect
-		// landing on the player, or the paid cost shows the cast. Only the release states count for a hand cast.
-		const core::ReleaseSignals signals{
-			.releaseState = state == RE::MagicCaster::State::kUnk04 || state == RE::MagicCaster::State::kCasting,
-			.castEvent = !s.hand && g_copyCastEvents.load() != s.castEventsAtStart,
-			.effectApplied = !s.hand && effect_redirect::CopyApplications() != s.effectsAtStart,
-			.paidEnough = !s.hand && ending && s.cost >= 1.0f && s.deepestDrop >= s.cost * kPayShare,
-			.otherHandCast = s.otherHandCast,
-			.slotChanged = s.slotChanged,
-		};
-		if (!s.released && core::CastReleased(signals)) {
-			s.released = true;
-			s.releasedBy = signals.releaseState ? "release state" : signals.castEvent ? "cast event" : signals.effectApplied ? "effect on the player" : "magicka paid";
-		}
-		if (s.released && !s.hand && !s.announced) {
-			s.announced = true;
-			AnnounceStaffCast(s);
-		}
-		if (ending) {
-			s.active = false;
-			if (s.hand) {
-				FinishHand(a_player, s);
-			} else {
-				FinishCopy(a_player, s);
-			}
+		for (const auto hand : kHands) {
+			WatchHand(a_player, hand, a_delta);
 		}
 	}
 }

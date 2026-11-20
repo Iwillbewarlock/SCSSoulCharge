@@ -3,6 +3,7 @@
 #include "selftest.h"
 #include "spell_copy.h"
 
+#include <array>
 #include <atomic>
 #include <mutex>
 #include <unordered_set>
@@ -14,7 +15,9 @@ namespace scssc::effect_redirect
 		// One PASS line per copy per game session, so the log shows each spell once without flooding.
 		std::mutex                               g_reportLock;
 		std::unordered_set<const RE::MagicItem*> g_reported;
-		std::atomic<std::uint32_t>               g_copyApplications{ 0 };
+		std::array<std::atomic<std::uint32_t>, 2> g_copyApplications{};  // per hand (AddTargetData::castingSource)
+		std::atomic<std::uint32_t>                g_unhandedApplications{ 0 };  // any other casting source
+		std::array<std::atomic<bool>, 4>          g_sourceLogged{};  // one log line per casting source, to see what summons use
 
 		void ReportOnce(const RE::MagicItem* a_copy, bool a_ok, const std::string& a_detail)
 		{
@@ -58,8 +61,19 @@ namespace scssc::effect_redirect
 				// Effects on the player only (a summon's, a self spell's): a projectile of the last cast landing on
 				// someone else while the next one charges must not count as that one's release.
 				auto* player = RE::PlayerCharacter::GetSingleton();
+				// Counted for the hand that cast it, so one hand's success is not the other's release (Astra 2026-11-20).
+				const auto source = a_data.castingSource;
+				const bool byHand = source == RE::MagicSystem::CastingSource::kRightHand || source == RE::MagicSystem::CastingSource::kLeftHand;
 				if (result && player && a_this == player->AsMagicTarget() && (redirected || spell_copy::IsCopy(item))) {
-					g_copyApplications.fetch_add(1);
+					if (byHand) {
+						g_copyApplications[Index(source == RE::MagicSystem::CastingSource::kLeftHand ? Hand::kLeft : Hand::kRight)].fetch_add(1);
+					} else {
+						g_unhandedApplications.fetch_add(1);
+					}
+					const auto slot = static_cast<std::size_t>(source);
+					if (slot < g_sourceLogged.size() && !g_sourceLogged[slot].exchange(true)) {
+						logger::info("copy {:08X} effect reached the player with casting source {} (0 left, 1 right)", item->GetFormID(), slot);
+					}
 				}
 				if (redirected && result) {  // judged once the engine took the effect, not before
 					ReportOnce(item, true,
@@ -85,8 +99,13 @@ namespace scssc::effect_redirect
 		logger::info("Hook installed: MagicTarget::AddTarget (Character, PlayerCharacter)");
 	}
 
-	std::uint32_t CopyApplications()
+	std::uint32_t CopyApplications(Hand a_hand)
 	{
-		return g_copyApplications.load();
+		return g_copyApplications[Index(a_hand)].load();
+	}
+
+	std::uint32_t CopyApplicationsWithoutHand()
+	{
+		return g_unhandedApplications.load();
 	}
 }

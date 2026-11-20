@@ -1,5 +1,7 @@
 #include "staff_art.h"
 
+#include "hand.h"
+
 #include "hand_slot.h"
 #include "selftest.h"
 #include "spell_copy.h"
@@ -29,9 +31,9 @@ namespace scssc::staff_art
 			const RE::MagicItem* shownFor{ nullptr };  // the slot item whose art we last attached; null = unknown
 			bool                 wasDrawn{ false };
 			bool                 drawPending{ false };  // drawn since the last refresh while a copy is in the slot
-			std::uint32_t        slotWrites{ 0 };       // hand_slot::Writes() at the last refresh
+			std::uint32_t        slotWrites{ 0 };       // hand_slot::Writes(a_hand) at the last refresh
 			float                drawAt{ 0.0f };
-			std::uint32_t        drawWrites{ 0 };  // hand_slot::Writes() at the draw: the engine's art is for that slot item
+			std::uint32_t        drawWrites{ 0 };  // hand_slot::Writes(a_hand) at the draw: the engine's art is for that slot item
 			bool                 fresh{ true };    // first frame after a reset: take the weapon state as it is
 			Wait                 wait{ Wait::kNone };
 			float                clock{ 0.0f };
@@ -40,13 +42,7 @@ namespace scssc::staff_art
 			float                checkStart{ 0.0f };
 			RE::FormID           checkArt{ 0 };
 		};
-		State g_state;
-
-		RE::ActorMagicCaster* RightCaster(RE::PlayerCharacter* a_player)
-		{
-			auto* caster = a_player->GetMagicCaster(RE::MagicSystem::CastingSource::kRightHand);
-			return caster ? static_cast<RE::ActorMagicCaster*>(caster) : nullptr;
-		}
+		std::array<State, 2> g_states;  // per hand
 
 		// Node names inside known hand-art models (houseCARL, 2026-11-16), the same check the test build passed 9/9 with:
 		// the engine renames the attached root 'MagicRight', so the model is told apart by a child node.
@@ -117,14 +113,13 @@ namespace scssc::staff_art
 			return state && state->GetWeaponState() == RE::WEAPON_STATE::kDrawn;
 		}
 
-		void Judge(const RE::ActorMagicCaster* a_caster, bool a_drawn)
+		void Judge(State& s, Hand a_hand, const RE::ActorMagicCaster* a_caster, bool a_drawn)
 		{
-			auto& s = g_state;
 			if (!s.checkId) {
 				return;
 			}
 			const auto elapsedMs = (s.clock - s.checkStart) * 1000.0f;
-			const auto detail = std::format("art {:08X} after {:.0f} ms", s.checkArt, elapsedMs);
+			const auto detail = std::format("{} hand art {:08X} after {:.0f} ms", Name(a_hand), s.checkArt, elapsedMs);
 			// Attached after our detach, with the art we set taken up (castingArt is cleared when it attaches): the
 			// attached one is ours. Which model it is was proven by node names in the test build (9/9).
 			const bool attachedOurs = a_caster->flags.all(RE::ActorMagicCaster::Flags::kCastingArtAttached) && a_caster->castingArtData.attachedArt &&
@@ -144,7 +139,7 @@ namespace scssc::staff_art
 			s.checkId = nullptr;
 		}
 
-		void Refresh(RE::ActorMagicCaster* a_caster, const RE::MagicItem* a_item, const char* a_id)
+		void Refresh(State& s, Hand a_hand, RE::ActorMagicCaster* a_caster, const RE::MagicItem* a_item, const char* a_id)
 		{
 			auto* art = spell_copy::TipArtOf(a_item);
 			g_detach(a_caster, true);
@@ -152,14 +147,13 @@ namespace scssc::staff_art
 			if (art) {
 				g_setArt(a_caster, art);
 			}
-			logger::debug("staff art: {} for {:08X} -> art {:08X}", a_id, a_item ? a_item->GetFormID() : 0u, art ? art->GetFormID() : 0u);
-			auto& s = g_state;
+			logger::debug("staff art {}: {} for {:08X} -> art {:08X}", Name(a_hand), a_id, a_item ? a_item->GetFormID() : 0u, art ? art->GetFormID() : 0u);
 			s.shownFor = a_item;
 			s.wait = Wait::kNone;
 			s.drawPending = false;
-			s.slotWrites = hand_slot::Writes();
+			s.slotWrites = hand_slot::Writes(a_hand);
 			if (stillAttached) {
-				selftest::Report(a_id, false, std::format("art {:08X}: the old art was still attached right after DetachCastingArt", art ? art->GetFormID() : 0u));
+				selftest::Report(a_id, false, std::format("{} hand art {:08X}: the old art was still attached right after DetachCastingArt", Name(a_hand), art ? art->GetFormID() : 0u));
 				s.checkId = nullptr;
 			} else if (art) {
 				s.checkId = a_id;
@@ -186,25 +180,25 @@ namespace scssc::staff_art
 
 	void Reset()
 	{
-		g_state = {};
+		g_states = {};
 	}
 
-	void OnFrame(RE::PlayerCharacter* a_player, float a_delta, bool a_staffHeld)
+	void OnFrame(RE::PlayerCharacter* a_player, float a_delta, Hand a_hand, bool a_staffHeld)
 	{
-		auto& s = g_state;
+		auto& s = g_states[Index(a_hand)];
 		if (std::isfinite(a_delta) && a_delta > 0.0f) {
 			s.clock += a_delta;
 		}
-		auto* caster = RightCaster(a_player);
+		auto* caster = Caster(a_player, a_hand);
 		if (!caster || !g_detach) {
 			return;
 		}
 		const bool drawn = Drawn(a_player);
 		if (!a_staffHeld && s.checkId) {
-			selftest::Skip(s.checkId, std::format("art {:08X} (the staff left the hand first)", s.checkArt));
+			selftest::Skip(s.checkId, std::format("{} hand art {:08X} (the staff left the hand first)", Name(a_hand), s.checkArt));
 			s.checkId = nullptr;
 		}
-		Judge(caster, drawn);
+		Judge(s, a_hand, caster, drawn);
 		if (!a_staffHeld) {
 			// Another weapon or a spell: the engine owns that hand's art. Start over when a staff comes back.
 			s.shownFor = nullptr;
@@ -213,7 +207,7 @@ namespace scssc::staff_art
 			s.wasDrawn = drawn;
 			return;
 		}
-		const auto* slot = a_player->GetActorRuntimeData().selectedSpells[RE::Actor::SlotTypes::kRightHand];
+		const auto* slot = a_player->GetActorRuntimeData().selectedSpells[SlotType(a_hand)];
 		const bool  slotIsCopy = spell_copy::IsCopy(slot);
 		if (s.fresh) {
 			s.fresh = false;
@@ -222,7 +216,7 @@ namespace scssc::staff_art
 		if (drawn && !s.wasDrawn) {
 			s.drawPending = slotIsCopy;  // the engine attaches on draw by itself; ours makes sure it is the copy's art
 			s.drawAt = s.clock;
-			s.drawWrites = hand_slot::Writes();
+			s.drawWrites = hand_slot::Writes(a_hand);
 		}
 		s.wasDrawn = drawn;
 		if (s.drawPending && slotIsCopy) {
@@ -231,15 +225,15 @@ namespace scssc::staff_art
 			// Only when the copy was already in the slot at the draw, so the engine attached art for the copy and not
 			// for an item we replaced since (two frost models share one marker node). A model not in the marker table is
 			// trusted when our art is attached and taken up, instead of detaching it after the grace (Carbon 2026-11-17).
-			const bool sameSlot = hand_slot::Writes() == s.drawWrites;
+			const bool sameSlot = hand_slot::Writes(a_hand) == s.drawWrites;
 			const bool attachedTakenUp = caster->flags.all(RE::ActorMagicCaster::Flags::kCastingArtAttached) && caster->castingArtData.attachedArt && !caster->castingArt;
 			if (sameSlot && ShowsArt(caster, spell_copy::TipArtOf(slot)).value_or(attachedTakenUp)) {
 				if (s.wait == Wait::kSheathed) {
-					selftest::Report("T-ART-SHEATHED", true, std::format("copy {:08X}: the engine attached its art on draw, model checked", slot->GetFormID()));
+					selftest::Report("T-ART-SHEATHED", true, std::format("{} hand copy {:08X}: the engine attached its art on draw, model checked", Name(a_hand), slot->GetFormID()));
 				}
-				logger::debug("staff art: on draw the engine attached the copy's art itself");
+				logger::debug("staff art {}: on draw the engine attached the copy's art itself", Name(a_hand));
 				s.shownFor = slot;
-				s.slotWrites = hand_slot::Writes();
+				s.slotWrites = hand_slot::Writes(a_hand);
 				s.wait = Wait::kNone;
 				s.drawPending = false;
 				return;
@@ -251,7 +245,7 @@ namespace scssc::staff_art
 		const char* id = nullptr;
 		if (slot != s.shownFor && (slotIsCopy || spell_copy::IsCopy(s.shownFor))) {
 			id = slotIsCopy ? "T-ART-SWAP" : "T-ART-CONTROL";  // CONTROL: back to the staff's own enchantment
-		} else if (slotIsCopy && hand_slot::Writes() != s.slotWrites) {
+		} else if (slotIsCopy && hand_slot::Writes(a_hand) != s.slotWrites) {
 			id = "T-ART-SWAP";  // written again (the engine had put another item in between)
 		} else if (s.drawPending && slotIsCopy) {
 			id = "T-ART-DRAW";
@@ -271,6 +265,6 @@ namespace scssc::staff_art
 		} else if (s.wait == Wait::kCasting) {
 			id = "T-ART-MIDCAST";
 		}
-		Refresh(caster, slot, id);
+		Refresh(s, a_hand, caster, slot, id);
 	}
 }

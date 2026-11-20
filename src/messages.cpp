@@ -34,7 +34,6 @@ namespace scssc::messages
 			{ L"sReasonNoEffects", "it has no effects", 0 },
 			{ L"sDormant", "{0} casts its own enchantment until its spell is known again", 1 },
 			{ L"sSpellGone", "{0}: its spell no longer exists; it casts its own enchantment again", 1 },
-			{ L"sLeftHand", "{0} casts its bound spell only from the right hand", 1 },
 			{ L"sTableFull", "Too many staves hold spells ({0}); clear one first", 1 },
 			{ L"sOffRuntime", "SCSSoulCharge is off: game version {0} is not supported (1.6.1170 only). Staves work as in the base game.", 1 },
 			{ L"sOffHook", "SCSSoulCharge is off: another mod changed a place it needs. Staves work as in the base game. See SCSSoulCharge.log.", 0 },

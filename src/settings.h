@@ -10,8 +10,12 @@ namespace scssc
 	struct Settings
 	{
 		bool selfTest{ false };  // write SELFTEST PASS/FAIL/SKIP lines to the log
-		// Appended to the bound spell's name while its staff is held (staff_mark). Empty = off. UTF-8.
-		std::string staffMarker{ " \xE2\x98\x85" };  // " ★" (U+2605, in the KS X 1001 set Korean game fonts carry; user choice 2026-11-18)
+		// Appended to the bound spell's name while its staff is held (staff_mark), per hand. UTF-8. ★ is U+2605, in the
+		// KS X 1001 set Korean game fonts carry (user choice 2026-11-18); R / L per hand (user choice 2026-11-20).
+		bool        staffMarkerOn{ true };
+		std::string staffMarkerRight{ " \xE2\x98\x85R" };  // " ★R"
+		std::string staffMarkerLeft{ " \xE2\x98\x85L" };   // " ★L"
+		std::string staffMarkerBoth{ " \xE2\x98\x85R \xE2\x98\x85L" };  // right then left, for one spell on both staves
 		// "LocalFormID:Plugin.esp" staves that never take a spell, resolved once the plugins are known.
 		std::vector<std::string> excludeSpecs;
 		// [Uninstall] bRestoreNames: after a load, give every bound staff in the player's inventory its name back, clear
