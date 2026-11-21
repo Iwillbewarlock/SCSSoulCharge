@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(SCSSoulCharge VERSION 0.2.0 LANGUAGES CXX)
+project(SCSSoulCharge VERSION 1.0.0 LANGUAGES CXX)
 
 # CommonLibSSE-NG = alandtse/CommonLibVR 10.1.0 (39f9d07), cloned into extern/ (not tracked).
 # Chosen for AE 1.7.104 (address library format 5) support. GPL-3.0 with modding exceptions.

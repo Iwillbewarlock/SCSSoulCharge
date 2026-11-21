@@ -1,22 +1,42 @@
 # SCSSoulCharge
 
-An add-on for [Spellcasting Staff NG](https://www.nexusmods.com/skyrimspecialedition/mods/196207) 2.1.1 (SCS, by hamkidna, MIT) for Skyrim SE 1.5.97 / AE 1.6.1170 / AE 1.7.104.
+SKSE plugin for Skyrim SE/AE **1.6.1170**: bind a known spell to one staff item. While that staff is held, it casts the
+spell instead of its own enchantment, paid with magicka at the spell's own cost, with the spell's range, tip art and
+skill training. Both hands are supported. Nexus page: 198580.
 
-- Vanilla and mod staves become SCS catalysts: the DLL gives them the SCS keywords at load time.
-- A staff's own enchantment becomes a "charge spell" in the magic menu, cast through SCS and paid from the staff's soul gem charge (fire-and-forget per shot, concentration per second; refused when the charge cannot pay).
-- While charging, the staff tip shows the bound spell's casting art.
+- Hold a staff, open the magic menu, pick a spell for that hand: it is bound to that staff (picking it again clears it).
+- The staff is renamed `<name> [<spell>]`; the bound spell's name ends with ` ★R` / ` ★L` (both when one spell is on
+  both staves) while its staff is held.
+- Bindings live in the SKSE co-save, per item (record + `ExtraUniqueID`).
+- Notices are translatable (`SCSSoulCharge_Messages.ini`, UTF-16 LE); a Korean file is in `dist-optional/Korean`.
+- Other plugins: exported functions and an `'SCST'` SKSE message per staff cast, see `src/api.h` (API 4).
 
-Status: development build, tested in game on 1.6.1170 only. The test configuration converts only the staves listed in `SCSSoulCharge.ini` (`bOnlyListedStaves=1`).
+Status: 1.0.0. Proven in game on 1.6.1170 (self-tests `SELFTEST PASS/FAIL` in `SCSSoulCharge.log` with
+`[SelfTest] bEnabled=1`); design and test history in `docs/design-standalone.md`.
+
+## How it works
+A runtime `EnchantmentItem` copy of the bound spell goes into the hand slot (`selectedSpells`), written the way the
+engine's setter does it (preload 11303, release 11306), from a `Main::Update` frame hook (main thread). The copy answers
+range, flags and skill usage with the spell's values, its cost is the spell's cost (`CalculateCost` 11213) paid from
+magicka (resource lookup 33817), its effects are re-pointed at the spell's effects as they land (`MagicTarget::AddTarget`)
+so lasting effects survive a restart, and the tip art is swapped with DetachCastingArt 34152 / SetCastingArt 34150.
+The magic menu's spell equip call (37952/38908 +0xD7) is chained after Spellcasting Staff NG's own hook.
 
 ## Layout
-- `src/` SKSE plugin (CommonLibSSE-NG = alandtse/CommonLibVR 10.1.0, cloned into `extern/`, not tracked), `src/core/` game-independent rules with offline tests in `tests/`
-- `tools/build_esp.py` builds `SCSSoulCharge.esp` (1024 placeholder charge spells + a vanilla test staff)
-- `dist/` INI shipped with the plugin
-- `docs/` design, phase 0 findings, implementation plan with test results, in-game test procedure
-- `reference/scs-2.1.1/` SCS 2.1.1 source for reference (MIT, copyright hamkidna), not modified
+- `src/` plugin; `src/core/` game-independent rules with offline tests in `tests/` (`core_tests`)
+- `dist/` INI shipped with the plugin; `dist-optional/Korean/` Korean notices
+- `docs/` design and test history
+- `reference/scs-2.1.1/` Spellcasting Staff NG 2.1.1 source for reference (MIT, copyright hamkidna), not modified
+- `extern/CommonLibSSE-NG` (cloned, not tracked)
 
 ## Build
-`build.cmd` (Visual Studio 18, vcpkg at `C:\Dev\vcpkg`, Microsoft Detours from vcpkg). Output goes to `D:\DEV\build\SCSSoulCharge\release`.
+`build.cmd` (Visual Studio, vcpkg, Microsoft Detours from vcpkg). Output: `D:\DEV\build\SCSSoulCharge\release`.
+
+## Credits
+- Spellcasting Staff NG by hamkidna (MIT): reference for the magic-menu equip hook and the staff keyword.
+- Immersive Staves Tweaks by Czy2007: reference for the staff cost function it hooks.
+- CommonLibSSE-NG, Microsoft Detours (MIT), spdlog (MIT).
 
 ## License
-The plugin links CommonLibVR (GPL-3.0 with modding exceptions), so it is distributed under GPL-3.0. `reference/scs-2.1.1` keeps its own MIT license.
+CommonLibSSE-NG is GPL-3.0-or-later with its modding and linking exceptions, so this plugin is distributed under
+GPL-3.0 (`LICENSE`). `reference/scs-2.1.1` keeps its own MIT license.

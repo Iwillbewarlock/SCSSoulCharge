@@ -151,7 +151,7 @@ namespace scssc
 }
 
 SKSEPluginInfo(
-	.Version = REL::Version{ 0, 2, 0, 0 },
+	.Version = REL::Version{ 1, 0, 0, 0 },
 	.Name = "SCSSoulCharge"sv,
 	.Author = "qtuna"sv,
 	.RuntimeCompatibility = SKSE::VersionIndependence::AddressLibrary)
@@ -165,7 +165,7 @@ SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
 	scssc::messages::Load();
 	ApplyLogSettings();
 	const auto runtime = REL::Module::get().version();
-	logger::info("SCSSoulCharge v0.2.0 loading on runtime {}", runtime.string("."sv));
+	logger::info("SCSSoulCharge v1.0.0 loading on runtime {}", runtime.string("."sv));
 	if (runtime != kSupportedRuntime) {
 		logger::critical("Runtime {} is not supported (only 1.6.1170 so far). Nothing is hooked.", runtime.string("."sv));
 		const auto notice = scssc::messages::Text(scssc::messages::Msg::kOffRuntime, runtime.string("."sv));
