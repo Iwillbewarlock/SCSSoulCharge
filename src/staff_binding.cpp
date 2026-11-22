@@ -5,6 +5,7 @@
 #include "hand_slot.h"
 #include "main_queue.h"
 #include "messages.h"
+#include "runtime_check.h"
 #include "selftest.h"
 #include "settings.h"
 #include "spell_copy.h"
@@ -477,8 +478,8 @@ namespace scssc::staff_binding
 		}
 		const REL::Relocation<std::uintptr_t> parent{ REL::RelocationID(37952, 38908) };
 		const auto                            site = parent.address() + 0xD7;  // the call SCS hooks (SCS MenuEquipHook.cpp:42-43)
-		if (*reinterpret_cast<const std::uint8_t*>(site) != 0xE8) {
-			logger::critical("menu equip call site {:X} is not a CALL (another mod patched it?); spells cannot be put on staves, saved bindings are kept but not applied",
+		if (!runtime_check::MenuCallSiteOk(site)) {
+			logger::critical("menu equip call site {:X} failed its check (another mod patched it, or this game build differs); spells cannot be put on staves, saved bindings are kept but not applied",
 				site);
 			g_off = Off::kMenuHook;
 			return;

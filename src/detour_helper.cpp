@@ -19,4 +19,17 @@ namespace scssc::detour
 		}
 		return DetourTransactionCommit();
 	}
+
+	long Detach(void** a_target, void* a_detour) noexcept
+	{
+		if (const auto err = DetourTransactionBegin(); err != NO_ERROR) {
+			return err;
+		}
+		DetourUpdateThread(GetCurrentThread());
+		if (const auto err = DetourDetach(a_target, a_detour); err != NO_ERROR) {
+			DetourTransactionAbort();
+			return err;
+		}
+		return DetourTransactionCommit();
+	}
 }

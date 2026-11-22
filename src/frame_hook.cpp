@@ -2,6 +2,7 @@
 
 #include "cast_watch.h"
 #include "main_queue.h"
+#include "runtime_check.h"
 #include "selftest.h"
 #include "settings.h"
 #include "spell_copy.h"
@@ -17,6 +18,7 @@ namespace scssc::frame_hook
 	namespace
 	{
 		REL::Relocation<void (*)()> g_originalFrame;
+		std::uintptr_t              g_site = 0;  // set by Prepare
 		std::atomic<std::uint32_t>  g_mainThread{ 0 };
 
 		float FrameDelta()
@@ -89,17 +91,6 @@ namespace scssc::frame_hook
 			Measure(start, delta, held[0] || held[1]);
 		}
 
-		std::size_t FrameCallOffset()
-		{
-			const auto version = REL::Module::get().version();
-			if (version == REL::Version{ 1, 7, 104, 0 }) {
-				return 0xC38;
-			}
-			if (version == REL::Version{ 1, 6, 1170, 0 }) {
-				return 0xC26;
-			}
-			return 0x748;  // 1.5.97
-		}
 	}
 
 	std::uint32_t MainThreadId()
@@ -107,16 +98,23 @@ namespace scssc::frame_hook
 		return g_mainThread.load();
 	}
 
-	bool Install()
+	bool Prepare()
 	{
-		const REL::Relocation<std::uintptr_t> mainUpdate{ REL::VariantID(35565, 36564, 0) };
-		const auto site = mainUpdate.address() + FrameCallOffset();
-		if (*reinterpret_cast<const std::uint8_t*>(site) != 0xE8) {
-			logger::critical("Frame hook site {:X} is not a CALL (opcode {:02X}); the mod stays off", site, *reinterpret_cast<const std::uint8_t*>(site));
+		g_site = runtime_check::FrameCallSite();
+		if (!g_site) {
+			logger::critical("No usable Main::Update frame call; the mod stays off");
 			return false;
 		}
-		g_originalFrame = SKSE::GetTrampoline().write_call<5>(site, FrameThunk);
-		logger::info("Hook installed: Main::Update frame call (+0x{:X})", FrameCallOffset());
+		return true;
+	}
+
+	bool Install()
+	{
+		if (!g_site) {
+			return false;
+		}
+		g_originalFrame = SKSE::GetTrampoline().write_call<5>(g_site, FrameThunk);
+		logger::info("Hook installed: Main::Update frame call at {:X}", g_site);
 		return true;
 	}
 }

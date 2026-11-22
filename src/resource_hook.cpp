@@ -1,6 +1,7 @@
 #include "resource_hook.h"
 
 #include "detour_helper.h"
+#include "runtime_check.h"
 #include "spell_copy.h"
 
 #include <atomic>
@@ -21,12 +22,13 @@ namespace scssc::resource_hook
 		using CostFn = float (*)(const RE::MagicItem*, RE::Actor*);
 		CostFn g_originalCost = nullptr;
 
-		// The game's own lookup at +6C72E5 (1.6.1170, inside 38823) turns the item enchantment's resource into the HUD
-		// charge ratio; it keeps the engine's answer (2026-11-16 spike: answering magicka there broke the staff charge).
-		constexpr std::uintptr_t kItemChargeCaller1170 = 0x6C72E5;
+		// The game's own lookup inside 38823 (SE 37868; 38823+0x85 on the AE builds read, game +6C72E5 on 1.6.1170)
+		// turns the item enchantment's resource into the HUD charge ratio; it keeps the engine's answer (2026-11-16
+		// spike: answering magicka there broke the staff charge). Found at start by runtime_check, set before the hook.
+		std::uintptr_t g_itemChargeReturn = 0;
 
 		// Every distinct (caller, casting source) that asks for a copy's resource, once a game run: the left hand's HUD
-		// charge path may call from another site than +6C72E5, known for the right hand only (Astra 2026-11-20). This
+		// charge path may call from another site than the right hand's (38823+0x85), known for the right hand only (Astra 2026-11-20). This
 		// line is how the left caller is found in game; a new caller is not trusted until it is shown to be the HUD.
 		std::mutex                                                          g_callersLock;
 		std::set<std::pair<std::uintptr_t, RE::MagicSystem::CastingSource>> g_callers;
@@ -67,10 +69,9 @@ namespace scssc::resource_hook
 			if (!spell_copy::IsCopy(a_item)) {
 				return engine;
 			}
-			static const bool is1170 = REL::Module::get().version() == REL::Version{ 1, 6, 1170, 0 };
-			const auto        returnAddress = reinterpret_cast<std::uintptr_t>(_ReturnAddress());
-			const auto        caller = returnAddress - REL::Module::get().base();
-			const auto        answer = is1170 && caller == kItemChargeCaller1170 ? engine : RE::ActorValue::kMagicka;
+			const auto returnAddress = reinterpret_cast<std::uintptr_t>(_ReturnAddress());
+			const auto caller = returnAddress - REL::Module::get().base();
+			const auto answer = returnAddress == g_itemChargeReturn ? engine : RE::ActorValue::kMagicka;
 			LogCallerOnce(returnAddress, caller, a_source, engine, answer);
 			return answer;
 		}
@@ -121,12 +122,32 @@ namespace scssc::resource_hook
 		}
 	}
 
+	bool Prepare()
+	{
+		const auto lookup = REL::Relocation<std::uintptr_t>{ RELOCATION_ID(33817, 34609) }.address();
+		const auto cost = REL::Relocation<std::uintptr_t>{ RELOCATION_ID(11213, 11321) }.address();
+		// Callers keep calling the function's own address after a detour (Detours patches the function's entry), so
+		// the scan is the same before or after; it runs here, with the other checks, before anything is written.
+		g_itemChargeReturn = runtime_check::ItemChargeReturn(lookup);
+		const bool lookupOk = runtime_check::DetourTargetOk(lookup, "resource lookup 33817/34609");
+		const bool costOk = runtime_check::DetourTargetOk(cost, "CalculateCost 11213/11321");
+		if (!g_itemChargeReturn) {
+			logger::critical("HUD charge caller not found; the mod stays off (a copy would break the staff charge display)");
+		}
+		g_original = reinterpret_cast<ResourceFn>(lookup);
+		g_originalCost = reinterpret_cast<CostFn>(cost);
+		return g_itemChargeReturn && lookupOk && costOk;
+	}
+
 	bool Install()
 	{
-		g_original = reinterpret_cast<ResourceFn>(REL::Relocation<std::uintptr_t>{ RELOCATION_ID(33817, 34609) }.address());
-		g_originalCost = reinterpret_cast<CostFn>(REL::Relocation<std::uintptr_t>{ RELOCATION_ID(11213, 11321) }.address());
-		if (!Attach(reinterpret_cast<void**>(&g_original), reinterpret_cast<void*>(&Thunk), "cost resource lookup") ||
-			!Attach(reinterpret_cast<void**>(&g_originalCost), reinterpret_cast<void*>(&CostThunk), "magic item cost")) {
+		if (!Attach(reinterpret_cast<void**>(&g_original), reinterpret_cast<void*>(&Thunk), "cost resource lookup")) {
+			return false;
+		}
+		if (!Attach(reinterpret_cast<void**>(&g_originalCost), reinterpret_cast<void*>(&CostThunk), "magic item cost")) {
+			// The first detour must not stay behind while the mod reports itself off (reviewer 2026-11-22).
+			const auto err = detour::Detach(reinterpret_cast<void**>(&g_original), reinterpret_cast<void*>(&Thunk));
+			logger::critical("cost resource lookup hook removed again (Detours error {})", err);
 			return false;
 		}
 		REL::Relocation<std::uintptr_t> casterVtable{ RE::VTABLE_ActorMagicCaster[0] };

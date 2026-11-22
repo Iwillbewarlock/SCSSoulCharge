@@ -1,5 +1,6 @@
 #include "hand_slot.h"
 
+#include "runtime_check.h"
 #include "selftest.h"
 
 #include <array>
@@ -11,7 +12,7 @@ namespace scssc::hand_slot
 	namespace
 	{
 		// 11303 bumps preloadCount (+0x80) and queues the item's models into preloadedItem (+0x88); 11306 drops the
-		// count and frees the queued file at zero (decrypted 1.6.1170 code, 2026-11-16).
+		// count and frees the queued file at zero (decrypted 1.6.1170 code, 2026-11-16; same in the 1.7.104 executable).
 		using PreloadFn = void (*)(RE::MagicItem*);
 		using ReleaseFn = void (*)(RE::MagicItem*, bool);
 		PreloadFn     g_preload = nullptr;
@@ -51,14 +52,14 @@ namespace scssc::hand_slot
 
 	bool Install()
 	{
-		if (REL::Module::get().version() != REL::Version{ 1, 6, 1170, 0 }) {
-			logger::critical("hand slot: the preload addresses are known for 1.6.1170 only; the mod stays off");
+		const auto preload = runtime_check::PreloadItem();
+		const auto release = runtime_check::ReleaseItem();
+		if (!preload || !release) {
+			logger::critical("hand slot: the preload functions did not pass their start-up check; the mod stays off");
 			return false;
 		}
-		g_preload = reinterpret_cast<PreloadFn>(REL::ID(11303).address());
-		g_release = reinterpret_cast<ReleaseFn>(REL::ID(11306).address());
-		logger::info("hand slot: preload 11303 at {:X}, release 11306 at {:X}", reinterpret_cast<std::uintptr_t>(g_preload),
-			reinterpret_cast<std::uintptr_t>(g_release));
+		g_preload = reinterpret_cast<PreloadFn>(preload);
+		g_release = reinterpret_cast<ReleaseFn>(release);
 		return true;
 	}
 

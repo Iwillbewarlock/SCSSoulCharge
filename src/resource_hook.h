@@ -8,6 +8,10 @@
 
 namespace scssc::resource_hook
 {
-	// False when the lookup could not be hooked; the mod must then stay off (copies would drain the staff).
+	// Finds the HUD charge caller and checks the hook targets (runtime_check.h) without writing; false = mod off.
+	bool Prepare();
+
+	// False when the lookup could not be hooked; the mod must then stay off (copies would drain the staff). Nothing
+	// stays hooked then.
 	bool Install();
 }

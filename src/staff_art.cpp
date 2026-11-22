@@ -3,6 +3,7 @@
 #include "hand.h"
 
 #include "hand_slot.h"
+#include "runtime_check.h"
 #include "selftest.h"
 #include "spell_copy.h"
 
@@ -167,14 +168,14 @@ namespace scssc::staff_art
 
 	bool Install()
 	{
-		if (REL::Module::get().version() != REL::Version{ 1, 6, 1170, 0 }) {
-			logger::critical("staff art: 34150/34152 are known for 1.6.1170 only; the mod stays off");
+		const auto detach = runtime_check::DetachCastingArt();
+		const auto setArt = runtime_check::SetCastingArt();
+		if (!detach || !setArt) {
+			logger::critical("staff art: DetachCastingArt/SetCastingArt did not pass their start-up check; the mod stays off");
 			return false;
 		}
-		g_detach = reinterpret_cast<DetachArtFn>(REL::ID(34152).address());
-		g_setArt = reinterpret_cast<SetCastingArtFn>(REL::ID(34150).address());
-		logger::info("staff art: DetachCastingArt 34152 at {:X}, SetCastingArt 34150 at {:X}", reinterpret_cast<std::uintptr_t>(g_detach),
-			reinterpret_cast<std::uintptr_t>(g_setArt));
+		g_detach = reinterpret_cast<DetachArtFn>(detach);
+		g_setArt = reinterpret_cast<SetCastingArtFn>(setArt);
 		return true;
 	}
 

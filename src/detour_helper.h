@@ -8,4 +8,7 @@ namespace scssc::detour
 	// a_target holds the function address; on success it becomes the trampoline that runs the original.
 	// Returns the Detours error code (0 = NO_ERROR).
 	long Attach(void** a_target, void* a_detour) noexcept;
+
+	// Undoes Attach: a_target holds the trampoline and gets the function address back. Returns the error code.
+	long Detach(void** a_target, void* a_detour) noexcept;
 }

@@ -10,7 +10,7 @@
 
 namespace scssc::staff_art
 {
-	// Finds 34150/34152. Only on 1.6.1170; false elsewhere.
+	// Finds 34150/34152 (SE 33369/33371) and checks them (runtime_check.h); false when a check fails.
 	bool Install();
 
 	// Forget what is shown (load, new game): the next managed slot item gets a refresh.

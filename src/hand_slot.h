@@ -9,7 +9,7 @@
 
 namespace scssc::hand_slot
 {
-	// Finds the preload functions. Only on 1.6.1170, the build whose code was read; false elsewhere.
+	// Finds the preload functions for the running build and checks them (runtime_check.h); false when a check fails.
 	bool Install();
 
 	RE::MagicItem* Current(RE::PlayerCharacter* a_player, Hand a_hand);

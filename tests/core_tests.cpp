@@ -1,5 +1,6 @@
 // Offline tests for the game-independent rules. Exit code 0 = all passed.
 #include "core/bindings.h"
+#include "core/code_scan.h"
 #include "core/spell_rules.h"
 
 #include <cmath>
@@ -7,6 +8,7 @@
 #include <limits>
 #include <map>
 #include <string>
+#include <vector>
 
 namespace
 {
@@ -186,6 +188,58 @@ namespace
 		Check(full.Serialize().size() <= BindingTable::kMaxSerializedBytes, "a full table with the longest names fits the reader's limit");
 		Check(BindingTable::kMaxSerializedBytes <= (4u << 20), "the limit stays under the 4 MiB the old reader accepted");
 	}
+
+	// Start-up address checks (runtime_check.cpp) on hand-made code. Code "lives" at 0x1000.
+	void CodeScanTests()
+	{
+		using namespace scssc::core;
+		constexpr std::uintptr_t kAt = 0x1000;
+		// +0: call 0x1100 (rel 0xFB), +5: mov eax,[rcx+0x80], +11: jmp 0x1200 (rel 0x1F0 from 0x1010), +16: call 0x1100 again
+		const std::vector<std::uint8_t> code{
+			0xE8, 0xFB, 0x00, 0x00, 0x00,              // call 0x1100
+			0x8B, 0x81, 0x80, 0x00, 0x00, 0x00,        // mov eax, [rcx+0x80]
+			0xE9, 0xF0, 0x01, 0x00, 0x00,              // jmp 0x1200
+			0xE8, 0xEB, 0x00, 0x00, 0x00,              // call 0x1100 (next instruction at 0x1015)
+		};
+		const std::vector<std::uintptr_t> callee{ 0x1100 };
+		const std::vector<std::uintptr_t> tail{ 0x1200 };
+		const std::vector<std::uintptr_t> both{ 0x1100, 0x1200, 0x1300 };
+
+		Check(Rel32Target(code, kAt, 0) == 0x1100, "rel32 destination of a call");
+		Check(Rel32Target(code, kAt, 11) == 0x1200, "rel32 destination of a jump");
+		Check(FindBranchesTo(code, kAt, callee, false).size() == 2, "both calls to the expected function are found");
+		Check(CountCalledTargets(code, kAt, both) == 1, "a function called twice counts once; a jump is not a call");
+		Check(FindBranchesTo(code, kAt, tail, false).empty(), "a jump is not found when only calls are asked for (failure)");
+		const auto jumps = FindBranchesTo(code, kAt, tail, true);
+		Check(jumps.size() == 1 && jumps[0].offset == 11 && jumps[0].kind == Branch::kJump, "the tail jump is found when jumps count");
+		Check(HasDisp32(code, 0x80) && !HasDisp32(code, 0x88), "member displacement +0x80 present, +0x88 absent");
+		const std::vector<std::uint8_t> movModrm{ 0x8B, 0x81 };
+		const std::vector<std::uint8_t> reversed{ 0x81, 0x8B };
+		Check(ContainsBytes(code, movModrm) && !ContainsBytes(code, reversed), "a byte run is found only in its own order");
+		Check(!ContainsBytes(code, std::vector<std::uint8_t>{}), "an empty byte run never matches (boundary)");
+
+		// lock xadd, with and without REX; a truncated one at the buffer end does not count
+		const std::vector<std::uint8_t> xadd{ 0x90, 0xF0, 0x0F, 0xC1, 0x01 };        // lock xadd [rcx], eax
+		const std::vector<std::uint8_t> xaddRex{ 0xF0, 0x44, 0x0F, 0xC1, 0x01 };     // lock xadd [rcx], r8d
+		const std::vector<std::uint8_t> lockInc{ 0xF0, 0xFF, 0x81, 0x80, 0x00, 0x00, 0x00 };  // lock inc [rcx+0x80]
+		const std::vector<std::uint8_t> cut{ 0x90, 0xF0, 0x44, 0x0F };               // ends before C1
+		Check(HasLockXadd(xadd) && HasLockXadd(xaddRex), "lock xadd found with and without REX");
+		Check(!HasLockXadd(lockInc), "lock inc is not a lock xadd (failure)");
+		Check(!HasLockXadd(cut), "a lock xadd cut at the buffer end does not count (boundary)");
+
+		// boundary: a branch in the last five bytes counts; four bytes are too few; an offset past the end gives 0
+		const std::vector<std::uint8_t> tailOnly(code.end() - 5, code.end());
+		Check(FindBranchesTo(tailOnly, kAt + 0x10, callee, false).size() == 1, "a call filling the whole buffer is found (boundary)");
+		const std::vector<std::uint8_t> shortCode(code.begin(), code.begin() + 4);
+		Check(FindBranchesTo(shortCode, kAt, callee, false).empty() && Rel32Target(shortCode, kAt, 0) == 0, "four bytes hold no rel32 branch (boundary)");
+		Check(Rel32Target(code, kAt, code.size()) == 0 && Rel32Target(code, kAt, code.size() + 7) == 0, "an offset at or past the end gives 0 (failure)");
+
+		// failure: the same bytes at another address reach other destinations, so nothing matches
+		Check(CountCalledTargets(code, kAt + 0x40, both) == 0, "moved code does not match the expected destinations (failure)");
+		// a backwards call (negative displacement)
+		const std::vector<std::uint8_t> back{ 0xE8, 0xFB, 0xFF, 0xFF, 0xFF };  // call kAt + 5 - 5 = kAt
+		Check(Rel32Target(back, kAt, 0) == kAt, "negative displacement");
+	}
 }
 
 int main()
@@ -193,6 +247,7 @@ int main()
 	BindingTableTests();
 	SpellRuleTests();
 	FinalReviewRuleTests();
+	CodeScanTests();
 	std::printf("core_tests: %d checks, %d failures\n", g_checks, g_failures);
 	return g_failures == 0 ? 0 : 1;
 }

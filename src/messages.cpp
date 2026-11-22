@@ -35,10 +35,10 @@ namespace scssc::messages
 			{ L"sDormant", "{0} casts its own enchantment until its spell is known again", 1 },
 			{ L"sSpellGone", "{0}: its spell no longer exists; it casts its own enchantment again", 1 },
 			{ L"sTableFull", "Too many staves hold spells ({0}); clear one first", 1 },
-			{ L"sOffRuntime", "SCSSoulCharge is off: game version {0} is not supported (1.6.1170 only). Staves work as in the base game.", 1 },
-			{ L"sOffHook", "SCSSoulCharge is off: another mod changed a place it needs. Staves work as in the base game. See SCSSoulCharge.log.", 0 },
+			{ L"sOffRuntime", "SCSSoulCharge is off: game version {0} is not supported (1.5.97, or 1.6.317 up to 1.7.x). Staves work as in the base game.", 1 },
+			{ L"sOffHook", "SCSSoulCharge is off: a part of the game it needs is not as expected (another mod changed it, or this game version differs). Staves work as in the base game. See SCSSoulCharge.log.", 0 },
 			{ L"sMenuHookFailed",
-				"SCSSoulCharge: another mod changed the magic menu. Spells cannot be put on staves, and bound staves cast their own enchantment. See SCSSoulCharge.log.", 0 },
+				"SCSSoulCharge: the magic menu is not as expected (another mod changed it, or this game version differs). Spells cannot be put on staves, and bound staves cast their own enchantment. See SCSSoulCharge.log.", 0 },
 			{ L"sUninstallDone", "SCSSoulCharge: {0} carried staves got their names back and lost their spells (staves elsewhere keep theirs). Save now, then remove the mod.", 1 },
 		} };
 

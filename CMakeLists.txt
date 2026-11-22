@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(SCSSoulCharge VERSION 1.0.0 LANGUAGES CXX)
+project(SCSSoulCharge VERSION 1.0.1 LANGUAGES CXX)
 
 # CommonLibSSE-NG = alandtse/CommonLibVR 10.1.0 (39f9d07), cloned into extern/ (not tracked).
 # Chosen for AE 1.7.104 (address library format 5) support. GPL-3.0 with modding exceptions.
@@ -16,6 +16,7 @@ add_subdirectory(extern/CommonLibSSE-NG CommonLibSSE EXCLUDE_FROM_ALL)
 add_library(scssc_core STATIC
     src/core/bindings.cpp
     src/core/spell_rules.cpp
+    src/core/code_scan.cpp
 )
 target_include_directories(scssc_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_compile_features(scssc_core PUBLIC cxx_std_23)
@@ -45,6 +46,7 @@ add_library(${PROJECT_NAME} SHARED
     src/staff_mark.cpp
     src/messages.cpp
     src/detour_helper.cpp
+    src/runtime_check.cpp
 )
 target_include_directories(${PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_compile_features(${PROJECT_NAME} PRIVATE cxx_std_23)
